@@ -1,0 +1,54 @@
+{
+  "entryPoints": ["src/index.ts"],
+  "out": "docs",
+  "theme": "default",
+  "name": "Rampart SDK",
+  "includeVersion": true,
+  "readme": "README.md",
+  "navigationLinks": {
+    "GitHub": "https://github.com/RampartNetwork/rampart-monad",
+    "npm": "https://npmjs.com/package/rampart-monad",
+    "Website": "https://rampart.xyz"
+  },
+  "categorizeByGroup": true,
+  "categoryOrder": [
+    "DEX",
+    "Lending",
+    "LST",
+    "Perps",
+    "Yield",
+    "Oracles",
+    "Portfolio",
+    "Network",
+    "Aggregator",
+    "*"
+  ],
+  "plugin": [],
+  "excludePrivate": true,
+  "excludeInternal": true,
+  "searchInComments": true,
+  "externalSymbolLinkMappings": {
+    "viem": {
+      "VerifyHashReturnType": "#",
+      "VerifyMessageReturnType": "#",
+      "VerifySiweMessageReturnType": "#",
+      "VerifyTypedDataReturnType": "#",
+      "UninstallFilterReturnType": "#",
+      "UninstallFilterParameters": "#",
+      "WaitForTransactionReceiptReturnType": "#",
+      "WaitForTransactionReceiptParameters": "#",
+      "WatchBlockNumberReturnType": "#",
+      "WatchBlockNumberParameters": "#",
+      "WatchBlocksReturnType": "#",
+      "WatchBlocksParameters": "#",
+      "WatchContractEventReturnType": "#",
+      "WatchContractEventParameters": "#",
+      "WatchEventReturnType": "#",
+      "WatchEventParameters": "#",
+      "WatchPendingTransactionsReturnType": "#",
+      "WatchPendingTransactionsParameters": "#"
+    }
+  },
+  "sort": ["source-order"],
+  "groupOrder": ["Functions", "Interfaces", "Type Aliases", "Variables", "*"]
+}

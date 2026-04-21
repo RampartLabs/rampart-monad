@@ -1,0 +1,63 @@
+{
+  "name": "rampart-monad",
+  "version": "0.1.0",
+  "description": "Monad-native AgentKit SDK - 55+ protocols, one import",
+  "type": "module",
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "require": "./dist/index.cjs"
+    }
+  },
+  "scripts": {
+    "build": "tsup",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "typecheck": "tsc --noEmit",
+    "docs": "typedoc",
+    "docs:watch": "typedoc --watch"
+  },
+  "keywords": [
+    "monad",
+    "defi",
+    "sdk",
+    "agentkit",
+    "web3",
+    "ai-agents",
+    "viem",
+    "blockchain",
+    "liquid-staking",
+    "lending"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/RampartLabs/rampart-monad.git"
+  },
+  "bugs": {
+    "url": "https://github.com/RampartLabs/rampart-monad/issues"
+  },
+  "author": "0xNickyTan",
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE",
+    "CHANGELOG.md"
+  ],
+  "dependencies": {
+    "@redstone-finance/sdk": "^0.9.0",
+    "ai": "^6.0.168",
+    "viem": "^2.48.1",
+    "zod": "^4.3.6"
+  },
+  "devDependencies": {
+    "@types/node": "^25.6.0",
+    "tsup": "^8.5.1",
+    "typedoc": "^0.28.19",
+    "typescript": "^6.0.3",
+    "vitest": "^3.2.4"
+  }
+}
