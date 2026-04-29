@@ -23,21 +23,16 @@
 import { publicClient } from '../chain'
 
 export const TOWNSQUARE_ADDRESSES = {
-  SpokeController: '0x8f8a0ed366439576b7db220678ed1259743239e3' as `0x${string}`,
-  AccountCtrl:     '0xc2df24203ab3a4f3857d649757a99e18de059a16' as `0x${string}`,
+  Hub:      '0x2dfdb4bf6c910b5bbbb0d07ec5f088e294628189' as `0x${string}`,
+  MONPool:  '0x106d0e2bff74b39d09636bdcd5d4189f24d91433' as `0x${string}`,
+  USDCPool: '0xdb4e67f878289a820046f46f6304fd6ee1449281' as `0x${string}`,
 } as const
 
-const SPOKE_CTRL_ABI = [
-  { name: 'totalDeposits',  type: 'function' as const, inputs: [], outputs: [{ type: 'uint256' }], stateMutability: 'view' as const },
-  { name: 'totalBorrows',   type: 'function' as const, inputs: [], outputs: [{ type: 'uint256' }], stateMutability: 'view' as const },
-  { name: 'supplyRate',     type: 'function' as const, inputs: [], outputs: [{ type: 'uint256' }], stateMutability: 'view' as const },
-  { name: 'borrowRate',     type: 'function' as const, inputs: [], outputs: [{ type: 'uint256' }], stateMutability: 'view' as const },
-  { name: 'asset',          type: 'function' as const, inputs: [], outputs: [{ type: 'address' }], stateMutability: 'view' as const },
-] as const
-
-const ERC20_ABI = [
-  { name: 'symbol',   type: 'function' as const, inputs: [], outputs: [{ type: 'string' }], stateMutability: 'view' as const },
-  { name: 'decimals', type: 'function' as const, inputs: [], outputs: [{ type: 'uint8' }],  stateMutability: 'view' as const },
+const POOL_ABI = [
+  { name: 'totalSupply', type: 'function' as const, inputs: [], outputs: [{ type: 'uint256' }], stateMutability: 'view' as const },
+  { name: 'name',        type: 'function' as const, inputs: [], outputs: [{ type: 'string'  }], stateMutability: 'view' as const },
+  { name: 'symbol',      type: 'function' as const, inputs: [], outputs: [{ type: 'string'  }], stateMutability: 'view' as const },
+  { name: 'decimals',    type: 'function' as const, inputs: [], outputs: [{ type: 'uint8'   }], stateMutability: 'view' as const },
 ] as const
 
 export interface TownSquareMarket {
@@ -51,69 +46,56 @@ export interface TownSquareMarket {
   protocol:     'townsquare'
 }
 
-const BLOCKS_PER_YEAR = 2_160_000
+const POOL_CONFIG = [
+  { addr: TOWNSQUARE_ADDRESSES.MONPool,  symbol: 'MON',  decimals: 18, priceUSD: 0.031 },
+  { addr: TOWNSQUARE_ADDRESSES.USDCPool, symbol: 'USDC', decimals: 6,  priceUSD: 1     },
+] as const
 
 /**
  * Returns TownSquare cross-chain lending market stats on Monad.
  *
- * Reads `totalDeposits`, `totalBorrows`, `supplyRate`, `borrowRate`, and `asset`
- * from the SpokeController, then resolves the asset's symbol and decimals.
- * Interest rates are expected as per-block values in ray (1e27) or mantissa (1e18);
- * both are annualised using 2,160,000 blocks per year (~400ms block time).
- * Returns an empty array if `totalDeposits` is zero (protocol not yet active).
+ * Reads `totalSupply` from each pool token (tsMON, tsUSDC) — these ERC20 tokens
+ * represent deposited positions. TVL is totalSupply × price.
  *
- * @returns Array of {@link TownSquareMarket} (zero or one entry for the spoke market).
+ * @returns Array of {@link TownSquareMarket} for active pools.
  *
  * @example
  * ```typescript
  * const markets = await getTownSquareMarkets()
- * // → [{ asset: 'USDC', totalDeposits: 2000000, totalBorrows: 1500000, supplyAPY: 0.05, ... }]
+ * // → [{ asset: 'MON', totalDeposits: 1632103, tvlUSD: 50595, ... }]
  * ```
  *
  * @category Lending
  */
 export async function getTownSquareMarkets(): Promise<TownSquareMarket[]> {
-  const [depositsRaw, borrowsRaw, supplyRateRaw, borrowRateRaw, assetAddrRaw] = await Promise.allSettled([
-    publicClient.readContract({ address: TOWNSQUARE_ADDRESSES.SpokeController, abi: SPOKE_CTRL_ABI, functionName: 'totalDeposits' }),
-    publicClient.readContract({ address: TOWNSQUARE_ADDRESSES.SpokeController, abi: SPOKE_CTRL_ABI, functionName: 'totalBorrows' }),
-    publicClient.readContract({ address: TOWNSQUARE_ADDRESSES.SpokeController, abi: SPOKE_CTRL_ABI, functionName: 'supplyRate' }),
-    publicClient.readContract({ address: TOWNSQUARE_ADDRESSES.SpokeController, abi: SPOKE_CTRL_ABI, functionName: 'borrowRate' }),
-    publicClient.readContract({ address: TOWNSQUARE_ADDRESSES.SpokeController, abi: SPOKE_CTRL_ABI, functionName: 'asset' }),
-  ])
+  const results = await Promise.allSettled(
+    POOL_CONFIG.map(async (pool) => {
+      const [supplyRaw, nameRaw] = await Promise.allSettled([
+        publicClient.readContract({ address: pool.addr, abi: POOL_ABI, functionName: 'totalSupply' }),
+        publicClient.readContract({ address: pool.addr, abi: POOL_ABI, functionName: 'name' }),
+      ])
 
-  const assetAddr = assetAddrRaw.status === 'fulfilled' ? (assetAddrRaw.value as string) : ''
-  let assetSymbol = 'USDC'
-  let decimals    = 6
-  if (assetAddr) {
-    const [sym, dec] = await Promise.allSettled([
-      publicClient.readContract({ address: assetAddr as `0x${string}`, abi: ERC20_ABI, functionName: 'symbol' }),
-      publicClient.readContract({ address: assetAddr as `0x${string}`, abi: ERC20_ABI, functionName: 'decimals' }),
-    ])
-    if (sym.status === 'fulfilled') assetSymbol = sym.value as string
-    if (dec.status === 'fulfilled') decimals    = Number(dec.value as number)
-  }
+      const totalDeposits = supplyRaw.status === 'fulfilled'
+        ? Number(supplyRaw.value as bigint) / (10 ** pool.decimals)
+        : 0
+      if (totalDeposits === 0) return null
 
-  const totalDeposits = depositsRaw.status === 'fulfilled' ? Number(depositsRaw.value as bigint) / (10 ** decimals) : 0
-  const totalBorrows  = borrowsRaw.status  === 'fulfilled' ? Number(borrowsRaw.value  as bigint) / (10 ** decimals) : 0
-  const supplyRate    = supplyRateRaw.status === 'fulfilled' ? Number(supplyRateRaw.value as bigint) : 0
-  const borrowRate    = borrowRateRaw.status === 'fulfilled' ? Number(borrowRateRaw.value as bigint) : 0
+      return {
+        address:       pool.addr,
+        asset:         pool.symbol,
+        totalDeposits,
+        totalBorrows:  0,
+        supplyAPY:     0,
+        borrowAPY:     0,
+        tvlUSD:        totalDeposits * pool.priceUSD,
+        protocol:      'townsquare' as const,
+      }
+    }),
+  )
 
-  // Rates typically per-block in ray (1e27) or mantissa (1e18)
-  const supplyAPY = supplyRate > 1e18 ? (supplyRate / 1e27) * BLOCKS_PER_YEAR : (supplyRate / 1e18) * BLOCKS_PER_YEAR
-  const borrowAPY = borrowRate > 1e18 ? (borrowRate / 1e27) * BLOCKS_PER_YEAR : (borrowRate / 1e18) * BLOCKS_PER_YEAR
-
-  if (totalDeposits === 0) return []
-
-  return [{
-    address:       TOWNSQUARE_ADDRESSES.SpokeController,
-    asset:         assetSymbol,
-    totalDeposits,
-    totalBorrows,
-    supplyAPY:     Math.max(0, supplyAPY),
-    borrowAPY:     Math.max(0, borrowAPY),
-    tvlUSD:        totalDeposits,
-    protocol:      'townsquare',
-  }]
+  return results
+    .filter(r => r.status === 'fulfilled' && r.value !== null)
+    .map(r => (r as PromiseFulfilledResult<TownSquareMarket>).value)
 }
 
 /**

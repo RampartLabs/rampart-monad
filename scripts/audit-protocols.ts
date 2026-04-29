@@ -107,7 +107,6 @@ const PROTOCOLS: Protocol[] = [
   {
     name: 'Balancer V3',
     addr: '0xbA1333333333a1BA1108E8412f11850A5C319bA9',
-    priceSeed: 'MON fallback = 0.35 (should be 0.031 like other protocols)',
   },
   {
     name: 'Bean Exchange',
@@ -159,7 +158,13 @@ const PROTOCOLS: Protocol[] = [
   },
   {
     name: 'Morpho Blue',
-    addr: '0x1897A8997241C1cD4bD0698647e4EB7213535c24',
+    addr: '0xd5d960e8c380b724a48ac59e2dff1b2cb4a1eaee',
+    note: 'Morpho core — source: monad-crypto/protocols registry',
+  },
+  {
+    name: 'MetaMorpho Factory',
+    addr: '0xc1108c5d98dc09be44e656a9e34b04d37b90a50d',
+    note: 'MetaMorpho VaultV2 factory — source: monad-crypto/protocols registry',
   },
   {
     name: 'Curvance',
@@ -178,17 +183,18 @@ const PROTOCOLS: Protocol[] = [
   {
     name: 'Folks Finance',
     addr: '0xc7bc4A43384f84B8FC937Ab58173Edab23a4c3cD',
-    priceSeed: 'PRICE_SEEDS hardcoded as primary source — does NOT call oracle at all',
+    note: 'SpokeCommon — prices now from getVerifiedPrice oracle',
   },
   {
     name: 'Sumer Money',
     addr: '0x2d9b96648C784906253c7FA94817437EF59Cf226',
-    priceSeed: 'WETH=1800, WBTC=95000 hardcoded in PRICE_MAP',
+    note: 'Comptroller — ETH/BTC prices now from getVerifiedPrice oracle',
   },
   {
-    name: 'TownSquare',
-    addr: '0x8f8a0ed366439576b7db220678ed1259743239e3',
-    readFn: 'totalDeposits',
+    name: 'TownSquare (MON Pool)',
+    addr: '0x106d0e2bff74b39d09636bdcd5d4189f24d91433',
+    readFn: 'totalSupply',
+    note: 'Hub: 0x2dfdb4bf...  MON pool token (tsMON)',
   },
   {
     name: 'Timeswap',
@@ -249,9 +255,9 @@ const PROTOCOLS: Protocol[] = [
   },
   {
     name: 'Multipli (xRWAUSDI)',
-    addr: '0x754704Bc059F8C67012fEd69BC8A327a5aafb603',
-    readFn: 'totalAssets',
-    note:  '⚠ address matches USDC in token registry — verify this is correct',
+    addr: '0x0000000000000000000000000000000000000000',
+    api:  true,
+    note: 'address unverified — not in monad-crypto/protocols registry. Previous 0x754704 was USDC.',
   },
   {
     name: 'Covenant (CDP)',

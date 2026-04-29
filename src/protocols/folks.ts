@@ -20,6 +20,7 @@
 // ============================================================
 
 import { publicClient } from '../chain'
+import { getVerifiedPrice } from './oracles'
 
 export const FOLKS_ADDRESSES = {
   spokeCommon:            '0xc7bc4A43384f84B8FC937Ab58173Edab23a4c3cD' as `0x${string}`,
@@ -58,9 +59,23 @@ export interface FolksMarket {
   protocol:     'folks'
 }
 
-const PRICE_SEEDS: Record<string, number> = {
-  MON: 0.031, WBTC: 95000, WETH: 1800, SMON: 0.031,
-  AUSD: 1.0, USDT0: 1.0, GMON: 0.031, SHMON: 0.031,
+const STABLECOINS = new Set(['AUSD', 'USDT0', 'USDC', 'USDT'])
+
+async function getFolksPrices(): Promise<Record<string, number>> {
+  const [monR, btcR, ethR] = await Promise.allSettled([
+    getVerifiedPrice('MON'),
+    getVerifiedPrice('WBTC'),
+    getVerifiedPrice('WETH'),
+  ])
+  const mon = monR.status === 'fulfilled' ? monR.value.bestPrice : 0.031
+  const btc = btcR.status === 'fulfilled' ? btcR.value.bestPrice : 95000
+  const eth = ethR.status === 'fulfilled' ? ethR.value.bestPrice : 1800
+  return {
+    MON: mon, WMON: mon, SMON: mon, GMON: mon, SHMON: mon,
+    WBTC: btc, BTC: btc,
+    WETH: eth, ETH: eth,
+    AUSD: 1, USDT0: 1, USDC: 1, USDT: 1,
+  }
 }
 
 const SPOKE_MARKETS: Array<{ key: keyof typeof FOLKS_ADDRESSES; symbol: string }> = [
@@ -91,6 +106,8 @@ const SPOKE_MARKETS: Array<{ key: keyof typeof FOLKS_ADDRESSES; symbol: string }
  * @category Lending
  */
 export async function getFolksMarkets(): Promise<FolksMarket[]> {
+  const prices = await getFolksPrices()
+
   const results = await Promise.allSettled(
     SPOKE_MARKETS.map(async ({ key, symbol }) => {
       const addr = FOLKS_ADDRESSES[key]
@@ -101,7 +118,7 @@ export async function getFolksMarkets(): Promise<FolksMarket[]> {
 
       const decimals    = decimalsRaw.status    === 'fulfilled' ? Number(decimalsRaw.value as number) : 18
       const totalSupply = totalSupplyRaw.status === 'fulfilled' ? Number(totalSupplyRaw.value as bigint) / (10 ** decimals) : 0
-      const price       = PRICE_SEEDS[symbol.toUpperCase()] ?? 1
+      const price       = prices[symbol.toUpperCase()] ?? 1
 
       return {
         symbol,

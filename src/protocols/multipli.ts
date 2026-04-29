@@ -17,19 +17,22 @@
 // ============================================================
 // Rampart SDK — Multipli.fi on Monad
 // RWA (Real World Assets) yield protocol — tokenized Treasury/bond vaults
-// xRWAUSDI token: 0x754704Bc059F8C67012fEd69BC8A327a5aafb603
-// TVL: ~$50M (DeFiLlama verified)
+// NOTE: xRWAUSDI mainnet address not yet confirmed in official registry.
+// Previous address 0x754704... was USDC, not Multipli. Functions return
+// empty data until address is verified.
 // ============================================================
 
 import { publicClient } from '../chain'
 
 /**
  * Deployed Multipli contract addresses on Monad Mainnet.
+ * xRWAUSDI address is pending mainnet verification — not yet in the
+ * official monad-crypto/protocols registry.
  *
  * @category Yield
  */
 export const MULTIPLI_ADDRESSES = {
-  xRWAUSDI: '0x754704Bc059F8C67012fEd69BC8A327a5aafb603' as `0x${string}`,
+  xRWAUSDI: '' as `0x${string}`,
 } as const
 
 const ERC4626_ABI = [
@@ -73,6 +76,7 @@ export interface MultipliVault {
  */
 export async function getMultipliVault(): Promise<MultipliVault> {
   const addr = MULTIPLI_ADDRESSES.xRWAUSDI
+  if (!addr) return { name: 'xRWAUSDI', symbol: 'xRWAUSDI', address: '', totalAssets: 0, totalSupply: 0, exchangeRate: 1, tvlUSD: 0, decimals: 6, protocol: 'multipli' }
 
   const [totalAssetsRaw, totalSupplyRaw, decimalsRaw, name, symbol, converted] = await Promise.all([
     publicClient.readContract({ address: addr, abi: ERC4626_ABI, functionName: 'totalAssets' }).catch(() => 0n),

@@ -17,7 +17,8 @@
 import { publicClient } from '../chain'
 import { MONAD_BLOCKS_PER_YEAR } from '../chain'
 
-const METAMORPHO_FACTORY: `0x${string}` = '0x1897A8997241C1cD4bD0698647e4EB7213535c24'
+export const MORPHO_BLUE:      `0x${string}` = '0xd5d960e8c380b724a48ac59e2dff1b2cb4a1eaee'
+const METAMORPHO_FACTORY: `0x${string}` = '0xc1108c5d98dc09be44e656a9e34b04d37b90a50d'
 const APR_BLOCK_DELTA = 72_000n
 
 const FACTORY_EVENT_ABI = [{
