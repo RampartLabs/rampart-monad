@@ -39,8 +39,7 @@ export type { YieldOpportunity, ArbitrageAlert, MonadMarketOverview, TVLBreakdow
 // Phase 15 — Memecoins + Perps
 export { getNadFunTokens, getTrendingMemes, getGraduatedMemes, getNadFunStats, NADFUN_ADDRESSES } from './protocols/nadfun'
 export type { NadFunStats } from './protocols/nadfun'
-export { getMondayMarkets, getPerplMarkets, getPerplTVL, getPerpVaultStats, getFundingRates, getTotalPerpTVL, getNarwhalStats } from './protocols/perps'
-export type { NarwhalStats } from './protocols/perps'
+export { getMondayMarkets, getPerplMarkets, getPerplTVL, getPerpVaultStats, getFundingRates, getTotalPerpTVL } from './protocols/perps'
 export type { MemeToken } from './protocols/nadfun'
 export type { PerpMarket, PerpVaultStats } from './protocols/perps'
 
@@ -132,10 +131,6 @@ export type { LagoonVault } from './protocols/lagoon'
 export { getFolksMarkets, getFolksTVL, FOLKS_ADDRESSES } from './protocols/folks'
 export type { FolksMarket } from './protocols/folks'
 
-// Phase 38 — Swaap Finance (market-maker DEX)
-export { getSwaapPools, getSwaapTVL, SWAAP_ADDRESSES } from './protocols/swaap'
-export type { SwaapPool } from './protocols/swaap'
-
 // Phase 39 — LeverUp (leveraged perps + LVUSD)
 export { getLeverUpStats, getLeverUpMarkets, LEVERUP_ADDRESSES } from './protocols/leverup'
 export type { LeverUpStats } from './protocols/leverup'
@@ -163,10 +158,6 @@ export type { OpenOceanQuote } from './protocols/openocean'
 // Phase 45 — Pingu Exchange (concentrated liquidity DEX)
 export { getPinguStats, isPinguAvailable, PINGU_ADDRESSES } from './protocols/pingu'
 export type { PinguStats } from './protocols/pingu'
-
-// Phase 46 — Purps (perp DEX)
-export { getPurpsMarkets, getPurpsTVL, PURPS_ADDRESSES } from './protocols/purps'
-export type { PurpsMarket } from './protocols/purps'
 
 // Phase 47 — Nabla Finance (single-sided AMM)
 export { getNablaPools, getNablaTVL, NABLA_ADDRESSES } from './protocols/nabla'

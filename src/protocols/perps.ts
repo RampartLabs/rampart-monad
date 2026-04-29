@@ -1,11 +1,11 @@
 /**
  * @module Perps
- * @description Perpetuals protocols on Monad: Monday Trade, Perpl Exchange, and Narwhal Finance.
+ * @description Perpetuals protocols on Monad: Monday Trade and Perpl Exchange.
  * Provides open interest, funding rates, vault TVL, and cross-protocol aggregation.
  *
- * **TVL:** ~$5M
+ * **TVL:** ~$3M
  * **Type:** Perpetuals
- * **Docs:** https://perpl.io
+ * **Docs:** https://app.perpl.xyz
  *
  * Available functions:
  * - {@link getMondayMarkets} — Monday Markets perp markets
@@ -14,7 +14,6 @@
  * - {@link getPerpVaultStats} — vault utilization and TVL for all perp protocols
  * - {@link getFundingRates} — current funding rates across perp protocols
  * - {@link getTotalPerpTVL} — combined TVL across all perp protocols on Monad
- * - {@link getNarwhalStats} — Narwhal protocol vault TVL, open interest, pair count
  */
 
 // ============================================================
@@ -36,29 +35,6 @@ const MONDAY_QUOTER_V2:   `0x${string}` = '0xB97eCD41Aef0F842E773C8F9905919cDE49
 // Collateral: AUSD (0x00000000eFE302BEAA2b3e6e1b18d08D69a9012a)
 const PERPL_EXCHANGE:     `0x${string}` = '0x34B6552d57a35a1D042CcAe1951BD1C370112a6F'
 const PERPL_AUSD:         `0x${string}` = '0x00000000eFE302BEAA2b3e6e1b18d08D69a9012a'
-
-// ── Narwhal Finance ───────────────────────────────────────────
-// Source: github.com/monad-crypto/protocols/mainnet/narwhal_finance.jsonc
-const NARWHAL_VAULT:         `0x${string}` = '0xb412A5d72c203Df308624e435659c9F70b6960aA'
-const NARWHAL_TRADING:       `0x${string}` = '0x3556d16519e3407AD43d5d7b3011bB095553d77a'
-const NARWHAL_STORAGE:       `0x${string}` = '0xfbc1cf329aD241352e777aB7BC17962452B87949'
-const NARWHAL_PAIR_INFOS:    `0x${string}` = '0x5c39f9739c123e64535F6250b256964Bc20c52f1'
-const NARWHAL_FEE_HELPER:    `0x${string}` = '0xE22FB1f1bB003759FAcED645458B8b8ee262828d'
-
-// Narwhal TradingStorage ABI — probes for open interest and trade counts
-const NARWHAL_STORAGE_ABI = [
-  { name: 'openTradesCount',   type: 'function' as const, inputs: [{ type: 'address' }, { type: 'uint256' }], outputs: [{ type: 'uint256' }], stateMutability: 'view' as const },
-  { name: 'openTradesInfo',    type: 'function' as const, inputs: [{ type: 'address' }, { type: 'uint256' }, { type: 'uint256' }], outputs: [{ type: 'tuple', components: [{ name: 'openPrice', type: 'uint256' }, { name: 'tp', type: 'uint256' }, { name: 'sl', type: 'uint256' }, { name: 'tpLastUpdated', type: 'uint256' }, { name: 'slLastUpdated', type: 'uint256' }, { name: 'beingMarketClosed', type: 'bool' }] }], stateMutability: 'view' as const },
-  { name: 'getPairs',          type: 'function' as const, inputs: [], outputs: [{ type: 'tuple[]', components: [{ name: 'from', type: 'string' }, { name: 'to', type: 'string' }, { name: 'spreadP', type: 'uint256' }, { name: 'groupIndex', type: 'uint256' }, { name: 'feeIndex', type: 'uint256' }] }], stateMutability: 'view' as const },
-  { name: 'pairsCount',        type: 'function' as const, inputs: [], outputs: [{ type: 'uint256' }], stateMutability: 'view' as const },
-] as const
-
-// Narwhal TradingVault ABI
-const NARWHAL_VAULT_ABI = [
-  { name: 'totalAssets',       type: 'function' as const, inputs: [], outputs: [{ type: 'uint256' }], stateMutability: 'view' as const },
-  { name: 'maxDeposit',        type: 'function' as const, inputs: [{ type: 'address' }], outputs: [{ type: 'uint256' }], stateMutability: 'view' as const },
-  { name: 'currentBalanceDAI', type: 'function' as const, inputs: [], outputs: [{ type: 'uint256' }], stateMutability: 'view' as const },
-] as const
 
 const PERP_VAULT_ABI = [
   { name: 'totalAssets',       type: 'function' as const, inputs: [], outputs: [{ type: 'uint256' }], stateMutability: 'view' as const },
@@ -94,7 +70,7 @@ const ERC20_ABI = [
 ] as const
 
 export interface PerpMarket {
-  protocol:       'monday' | 'perpl' | 'narwhal'
+  protocol:       'monday' | 'perpl'
   asset:          string
   longOI:         number
   shortOI:        number
@@ -106,14 +82,14 @@ export interface PerpMarket {
 }
 
 export interface PerpVaultStats {
-  protocol:        'monday' | 'perpl' | 'narwhal'
+  protocol:        'monday' | 'perpl'
   tvl:             number
   totalOI:         number
   utilizationRate: number
 }
 
 async function getProtocolVaultStats(
-  protocol: 'monday' | 'perpl' | 'narwhal',
+  protocol: 'monday' | 'perpl',
   vaultAddr: `0x${string}`
 ): Promise<PerpVaultStats | null> {
   if (vaultAddr === '0x0000000000000000000000000000000000000000') return null
@@ -258,13 +234,12 @@ export async function getPerplTVL(): Promise<number> {
  * @category Perps
  */
 export async function getPerpVaultStats(): Promise<PerpVaultStats[]> {
-  const [monday, narwhal, perplTvl] = await Promise.all([
+  const [monday, perplTvl] = await Promise.all([
     getProtocolVaultStats('monday', MONDAY_FACTORY),
-    getProtocolVaultStats('narwhal', NARWHAL_VAULT),
     getPerplTVL(),
   ])
   const perplStats: PerpVaultStats = { protocol: 'perpl', tvl: perplTvl, totalOI: 0, utilizationRate: 0 }
-  return [monday, narwhal, perplStats].filter((s): s is PerpVaultStats => s !== null)
+  return [monday, perplStats].filter((s): s is PerpVaultStats => s !== null)
 }
 
 /**
@@ -313,41 +288,4 @@ export async function getTotalPerpTVL(): Promise<number> {
   return stats.reduce((s, v) => s + v.tvl, 0)
 }
 
-export interface NarwhalStats {
-  tvl:         number    // USD — from TradingVault
-  pairsCount:  number
-  openTrades:  number
-  protocol:    'narwhal'
-}
-
-/**
- * Returns Narwhal Finance stats: vault TVL, trading pairs count, and open interest.
- *
- * @returns {@link NarwhalStats} with TVL from TradingVault and pair count from TradingStorage
- *
- * @example
- * ```typescript
- * const stats = await getNarwhalStats()
- * // → { tvl: 1200000, pairsCount: 12, openTrades: 0, protocol: 'narwhal' }
- * ```
- *
- * @category Perps
- */
-export async function getNarwhalStats(): Promise<NarwhalStats> {
-  const [tvlRaw, pairsCountRaw] = await Promise.allSettled([
-    publicClient.readContract({ address: NARWHAL_VAULT, abi: NARWHAL_VAULT_ABI, functionName: 'totalAssets' }),
-    publicClient.readContract({ address: NARWHAL_STORAGE, abi: NARWHAL_STORAGE_ABI, functionName: 'pairsCount' }),
-  ])
-
-  const tvl        = tvlRaw.status        === 'fulfilled' ? Number(tvlRaw.value as bigint) / 1e18 : 0
-  const pairsCount = pairsCountRaw.status === 'fulfilled' ? Number(pairsCountRaw.value as bigint) : 0
-
-  return {
-    tvl,
-    pairsCount,
-    openTrades: 0,    // requires iterating per pair — deferred
-    protocol:   'narwhal',
-  }
-}
-
-export { MONDAY_FACTORY, MONDAY_SWAP_ROUTER, MONDAY_QUOTER_V2, PERPL_EXCHANGE, NARWHAL_VAULT, NARWHAL_TRADING, NARWHAL_STORAGE, NARWHAL_PAIR_INFOS }
+export { MONDAY_FACTORY, MONDAY_SWAP_ROUTER, MONDAY_QUOTER_V2, PERPL_EXCHANGE }
