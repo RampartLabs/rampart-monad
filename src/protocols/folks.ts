@@ -53,6 +53,7 @@ const SPOKE_COMMON_ABI = [
 export interface FolksMarket {
   symbol:       string
   spokeAddress: string
+  spokeChainId: number   // Wormhole chain id of this spoke
   totalSupply:  number   // token units
   decimals:     number
   tvlUSD:       number   // estimated — supply × assumed price
@@ -61,12 +62,15 @@ export interface FolksMarket {
 
 const STABLECOINS = new Set(['AUSD', 'USDT0', 'USDC', 'USDT'])
 
-async function getFolksPrices(): Promise<Record<string, number>> {
-  const [mon, btc, eth] = await Promise.all([
+async function getFolksPrices(): Promise<Record<string, number | null>> {
+  const [monR, btcR, ethR] = await Promise.allSettled([
     getVerifiedPrice('MON').then(r => r.bestPrice),
     getVerifiedPrice('WBTC').then(r => r.bestPrice),
     getVerifiedPrice('WETH').then(r => r.bestPrice),
   ])
+  const mon = monR.status === 'fulfilled' ? monR.value : null
+  const btc = btcR.status === 'fulfilled' ? btcR.value : null
+  const eth = ethR.status === 'fulfilled' ? ethR.value : null
   return {
     MON: mon, WMON: mon, SMON: mon, GMON: mon, SHMON: mon,
     WBTC: btc, BTC: btc,
@@ -105,6 +109,13 @@ const SPOKE_MARKETS: Array<{ key: keyof typeof FOLKS_ADDRESSES; symbol: string }
 export async function getFolksMarkets(): Promise<FolksMarket[]> {
   const prices = await getFolksPrices()
 
+  const spokeChainIdRaw = await publicClient.readContract({
+    address: FOLKS_ADDRESSES.spokeCommon,
+    abi: SPOKE_COMMON_ABI,
+    functionName: 'spokeChainId',
+  }).catch(() => null)
+  const spokeChainId = spokeChainIdRaw !== null ? Number(spokeChainIdRaw) : 0
+
   const results = await Promise.allSettled(
     SPOKE_MARKETS.map(async ({ key, symbol }) => {
       const addr = FOLKS_ADDRESSES[key]
@@ -120,6 +131,7 @@ export async function getFolksMarkets(): Promise<FolksMarket[]> {
       return {
         symbol,
         spokeAddress: addr,
+        spokeChainId,
         totalSupply,
         decimals,
         tvlUSD:       totalSupply * price,

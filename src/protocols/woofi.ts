@@ -190,3 +190,49 @@ export async function getWooFiQuote(
     protocol: 'woofi',
   }
 }
+
+/**
+ * Queries the WooFi PMM for a sell-quote (reverse) quote on Monad.
+ *
+ * Calls `querySellQuote` on WooPPV2 — you sell USDC (quoteToken) and receive a base token.
+ * This is the reverse direction of {@link getWooFiQuote}.
+ *
+ * @param baseSymbol  - Base token you want to receive (e.g. `'WMON'`, `'WETH'`)
+ * @param quoteAmount - Amount of USDC to sell (human-readable, e.g. `100` = 100 USDC)
+ * @returns {@link WooFiQuote} with amountOut in base token units, or `null` on failure
+ *
+ * @example
+ * ```typescript
+ * const quote = await getWooFiQuoteReverse('WMON', 100)
+ * // → { amountIn: 100, amountOut: 282.5, price: 0.354, protocol: 'woofi' }
+ * ```
+ *
+ * @category DEX
+ */
+export async function getWooFiQuoteReverse(
+  baseSymbol: string,
+  quoteAmount: number,
+): Promise<WooFiQuote | null> {
+  let baseAddr: `0x${string}`
+  try { baseAddr = getToken(baseSymbol).address } catch { return null }
+
+  const quoteAmountRaw = BigInt(Math.round(quoteAmount * 1e6))  // USDC = 6 decimals
+
+  const baseAmount = await publicClient.readContract({
+    address: WOOFI_ADDRESSES.wooPPV2,
+    abi: WOO_PP_ABI,
+    functionName: 'querySellQuote',
+    args: [baseAddr, quoteAmountRaw],
+  }).catch(() => null)
+
+  if (baseAmount === null) return null
+
+  const baseDecimals = TOKENS[baseSymbol]?.decimals ?? 18
+  const amountOut = Number(baseAmount) / 10 ** baseDecimals
+  return {
+    amountIn:  quoteAmount,
+    amountOut,
+    price:     amountOut > 0 ? quoteAmount / amountOut : 0,
+    protocol:  'woofi',
+  }
+}

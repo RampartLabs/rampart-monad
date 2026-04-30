@@ -41,11 +41,18 @@ const ERC20_ABI = [
   { name: 'decimals', type: 'function' as const, inputs: [], outputs: [{ type: 'uint8'  }], stateMutability: 'view' as const },
 ] as const
 
+const POOL_ABI = [
+  { name: 'getSwapFeePercentage', type: 'function' as const, inputs: [], outputs: [{ type: 'uint256' }],   stateMutability: 'view' as const },
+  { name: 'getNormalizedWeights', type: 'function' as const, inputs: [], outputs: [{ type: 'uint256[]' }], stateMutability: 'view' as const },
+] as const
+
 export interface BalancerPool {
   address:   string
   type:      'weighted' | 'stable' | 'unknown'
   tokens:    string[]
   balances:  number[]
+  swapFee:   number     // e.g. 0.003 = 0.3%
+  weights:   number[]   // normalized weights 0..1, empty for stable pools
   tvlUSD:    number
   protocol:  'balancer'
 }
@@ -93,7 +100,8 @@ export async function getBalancerPools(): Promise<BalancerPool[]> {
   const pools  = await discoverPools()
   if (pools.length === 0) return []
 
-  const monPrice = await getVerifiedPrice('MON')
+  const monPriceRaw = await getVerifiedPrice('MON').catch(() => null)
+  const monPrice = monPriceRaw?.bestPrice ?? null
 
   const results = await Promise.allSettled(
     pools.map(async ({ address, type }) => {
@@ -125,10 +133,20 @@ export async function getBalancerPools(): Promise<BalancerPool[]> {
       let tvlUSD = 0
       for (let i = 0; i < symbols.length; i++) {
         if (STABLE_SYMBOLS.has(symbols[i])) tvlUSD += balances[i]
-        else if (WMON_SYMBOLS.has(symbols[i])) tvlUSD += balances[i] * monPrice.bestPrice
+        else if (WMON_SYMBOLS.has(symbols[i]) && monPrice !== null) tvlUSD += balances[i] * monPrice
       }
 
-      return { address, type, tokens: symbols, balances, tvlUSD, protocol: 'balancer' as const }
+      const [swapFeeRaw, weightsRaw] = await Promise.all([
+        publicClient.readContract({ address, abi: POOL_ABI, functionName: 'getSwapFeePercentage' }).catch(() => null),
+        publicClient.readContract({ address, abi: POOL_ABI, functionName: 'getNormalizedWeights'  }).catch(() => null),
+      ])
+
+      return {
+        address, type, tokens: symbols, balances, tvlUSD,
+        swapFee: swapFeeRaw !== null ? Number(swapFeeRaw as bigint) / 1e18 : 0,
+        weights: weightsRaw !== null ? (weightsRaw as bigint[]).map(w => Number(w) / 1e18) : [],
+        protocol: 'balancer' as const,
+      }
     }),
   )
 

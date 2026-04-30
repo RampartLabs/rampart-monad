@@ -30,11 +30,13 @@ const FACTORY_ABI = [
 ] as const
 
 const VAULT_ABI = [
-  { name: 'asset',         type: 'function' as const, inputs: [], outputs: [{ type: 'address' }], stateMutability: 'view' as const },
-  { name: 'symbol',        type: 'function' as const, inputs: [], outputs: [{ type: 'string' }],  stateMutability: 'view' as const },
-  { name: 'totalAssets',   type: 'function' as const, inputs: [], outputs: [{ type: 'uint256' }], stateMutability: 'view' as const },
-  { name: 'totalBorrows',  type: 'function' as const, inputs: [], outputs: [{ type: 'uint256' }], stateMutability: 'view' as const },
-  { name: 'interestRate',  type: 'function' as const, inputs: [], outputs: [{ type: 'uint256' }], stateMutability: 'view' as const },
+  { name: 'asset',        type: 'function' as const, inputs: [], outputs: [{ type: 'address' }], stateMutability: 'view' as const },
+  { name: 'symbol',       type: 'function' as const, inputs: [], outputs: [{ type: 'string' }],  stateMutability: 'view' as const },
+  { name: 'totalAssets',  type: 'function' as const, inputs: [], outputs: [{ type: 'uint256' }], stateMutability: 'view' as const },
+  { name: 'totalBorrows', type: 'function' as const, inputs: [], outputs: [{ type: 'uint256' }], stateMutability: 'view' as const },
+  { name: 'interestRate', type: 'function' as const, inputs: [], outputs: [{ type: 'uint256' }], stateMutability: 'view' as const },
+  { name: 'interestFee',  type: 'function' as const, inputs: [], outputs: [{ type: 'uint16' }],  stateMutability: 'view' as const },
+  { name: 'LTVFull',      type: 'function' as const, inputs: [{ name: 'collateral', type: 'address' }, { name: 'vault', type: 'address' }], outputs: [{ type: 'uint16' }], stateMutability: 'view' as const },
 ] as const
 
 const ERC20_ABI = [
@@ -43,16 +45,18 @@ const ERC20_ABI = [
 ] as const
 
 export interface EulerVault {
-  address:        string
-  vaultSymbol:    string
-  assetSymbol:    string
-  assetAddress:   string
-  totalAssets:    number    // in asset units
-  totalBorrows:   number
+  address:         string
+  vaultSymbol:     string
+  assetSymbol:     string
+  assetAddress:    string
+  totalAssets:     number   // in asset units
+  totalBorrows:    number
   utilizationRate: number   // 0..1
-  borrowAPR:      number    // e.g. 0.049 = 4.9%
-  supplyAPY:      number    // borrowAPR * utilization
-  protocol:       'euler'
+  borrowAPR:       number   // e.g. 0.049 = 4.9%
+  supplyAPY:       number   // borrowAPR * utilization
+  reserveFactor:   number   // protocol fee on interest (0..1)
+  ltv:             number   // loan-to-value / collateral factor (0..1)
+  protocol:        'euler'
 }
 
 function calcAPR(interestRateRaw: bigint): number {
@@ -96,20 +100,24 @@ export async function getEulerVaults(maxVaults = 108): Promise<EulerVault[]> {
         publicClient.readContract({ address: vault, abi: VAULT_ABI, functionName: 'symbol' }),
         publicClient.readContract({ address: vault, abi: VAULT_ABI, functionName: 'asset' }),
       ])
-      const [assetSym, assetDec, totalAssets, totalBorrows, interestRate] = await Promise.all([
+      const [assetSym, assetDec, totalAssets, totalBorrows, interestRate, interestFeeRaw, ltvRaw] = await Promise.all([
         publicClient.readContract({ address: assetAddr, abi: ERC20_ABI, functionName: 'symbol' }),
         publicClient.readContract({ address: assetAddr, abi: ERC20_ABI, functionName: 'decimals' }),
         publicClient.readContract({ address: vault, abi: VAULT_ABI, functionName: 'totalAssets' }),
         publicClient.readContract({ address: vault, abi: VAULT_ABI, functionName: 'totalBorrows' }),
         publicClient.readContract({ address: vault, abi: VAULT_ABI, functionName: 'interestRate' }).catch(() => 0n),
+        publicClient.readContract({ address: vault, abi: VAULT_ABI, functionName: 'interestFee' }).catch(() => null),
+        publicClient.readContract({ address: vault, abi: VAULT_ABI, functionName: 'LTVFull', args: [vault, vault] }).catch(() => null),
       ])
       const dec     = Number(assetDec)
       const divisor = 10n ** BigInt(dec)
       const ta      = Number((totalAssets  as bigint) / divisor)
       const tb      = Number((totalBorrows as bigint) / divisor)
       if (ta === 0) return null  // skip empty vaults
-      const util    = ta > 0 ? tb / ta : 0
-      const borrowAPR = calcAPR(interestRate as bigint)
+      const util         = ta > 0 ? tb / ta : 0
+      const borrowAPR    = calcAPR(interestRate as bigint)
+      const reserveFactor = interestFeeRaw !== null ? Number(interestFeeRaw) / 10000 : 0
+      const ltv           = ltvRaw !== null          ? Number(ltvRaw)         / 10000 : 0
       return {
         address:         vault,
         vaultSymbol:     vaultSym as string,
@@ -120,6 +128,8 @@ export async function getEulerVaults(maxVaults = 108): Promise<EulerVault[]> {
         utilizationRate: util,
         borrowAPR,
         supplyAPY:       borrowAPR * util,
+        reserveFactor,
+        ltv,
         protocol:        'euler' as const,
       }
     }),

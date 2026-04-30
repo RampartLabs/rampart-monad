@@ -33,6 +33,9 @@ const VAULT_ABI = [
   { name: 'totalAssets', type: 'function' as const, inputs: [], outputs: [{ type: 'uint256' }], stateMutability: 'view' as const },
   { name: 'totalSupply', type: 'function' as const, inputs: [], outputs: [{ type: 'uint256' }], stateMutability: 'view' as const },
   { name: 'asset',       type: 'function' as const, inputs: [], outputs: [{ type: 'address' }], stateMutability: 'view' as const },
+  { name: 'name',        type: 'function' as const, inputs: [], outputs: [{ type: 'string' }],  stateMutability: 'view' as const },
+  { name: 'symbol',      type: 'function' as const, inputs: [], outputs: [{ type: 'string' }],  stateMutability: 'view' as const },
+  { name: 'decimals',    type: 'function' as const, inputs: [], outputs: [{ type: 'uint8' }],   stateMutability: 'view' as const },
 ] as const
 
 // Curator / registry ABI attempts
@@ -54,11 +57,15 @@ const CURATOR_ABI = [
 ] as const
 
 export interface CovenantStats {
-  totalAssets: number
-  totalSupply: number
-  tvlUSD:      number
-  vaultCount:  number
-  protocol:    string
+  totalAssets:  number
+  totalSupply:  number
+  tvlUSD:       number
+  vaultCount:   number
+  assetAddress: string
+  name:         string
+  symbol:       string
+  decimals:     number
+  protocol:     string
 }
 
 /**
@@ -80,20 +87,29 @@ export interface CovenantStats {
  * @category Lending
  */
 export async function getCovenantStats(): Promise<CovenantStats> {
-  const [totalAssetsRaw, totalSupplyRaw, vaultCountRaw] = await Promise.all([
+  const [totalAssetsRaw, totalSupplyRaw, vaultCountRaw, assetAddrRaw, nameRaw, symbolRaw, decimalsRaw] = await Promise.all([
     publicClient.readContract({ address: COVENANT_ADDRESSES.covenant, abi: VAULT_ABI, functionName: 'totalAssets' }).catch(() => 0n),
-    publicClient.readContract({ address: COVENANT_ADDRESSES.covenant, abi: VAULT_ABI, functionName: 'totalSupply' }).catch(() => 0n),
+    publicClient.readContract({ address: COVENANT_ADDRESSES.covenant, abi: VAULT_ABI, functionName: 'totalSupply'  }).catch(() => 0n),
     publicClient.readContract({ address: COVENANT_ADDRESSES.curator,  abi: CURATOR_ABI, functionName: 'vaultCount' }).catch(() => 0n),
+    publicClient.readContract({ address: COVENANT_ADDRESSES.covenant, abi: VAULT_ABI, functionName: 'asset'        }).catch(() => null),
+    publicClient.readContract({ address: COVENANT_ADDRESSES.covenant, abi: VAULT_ABI, functionName: 'name'         }).catch(() => null),
+    publicClient.readContract({ address: COVENANT_ADDRESSES.covenant, abi: VAULT_ABI, functionName: 'symbol'       }).catch(() => null),
+    publicClient.readContract({ address: COVENANT_ADDRESSES.covenant, abi: VAULT_ABI, functionName: 'decimals'     }).catch(() => null),
   ])
 
-  const totalAssets = Number(totalAssetsRaw) / 1e18
-  const totalSupply = Number(totalSupplyRaw) / 1e18
+  const decimals    = decimalsRaw !== null ? Number(decimalsRaw) : 18
+  const totalAssets = Number(totalAssetsRaw) / 10 ** decimals
+  const totalSupply = Number(totalSupplyRaw) / 10 ** decimals
 
   return {
     totalAssets,
     totalSupply,
-    tvlUSD:     totalAssets,   // assume 1:1 USD if asset is a stablecoin or MON
-    vaultCount: Number(vaultCountRaw),
-    protocol:   'covenant',
+    tvlUSD:       totalAssets,
+    vaultCount:   Number(vaultCountRaw),
+    assetAddress: assetAddrRaw as string ?? '',
+    name:         nameRaw   as string  ?? '',
+    symbol:       symbolRaw as string  ?? '',
+    decimals,
+    protocol:     'covenant',
   }
 }

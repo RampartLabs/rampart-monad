@@ -37,14 +37,16 @@ const POOL_ABI = [
 ] as const
 
 export interface TownSquareMarket {
-  address:      string
-  asset:        string
+  address:       string
+  asset:         string
+  poolSymbol:    string
+  poolName:      string
   totalDeposits: number
   totalBorrows:  number
-  supplyAPY:    number
-  borrowAPY:    number
-  tvlUSD:       number
-  protocol:     'townsquare'
+  supplyAPY:     number
+  borrowAPY:     number
+  tvlUSD:        number
+  protocol:      'townsquare'
 }
 
 const POOL_CONFIG = [
@@ -73,8 +75,10 @@ export async function getTownSquareMarkets(): Promise<TownSquareMarket[]> {
 
   const results = await Promise.allSettled(
     POOL_CONFIG.map(async (pool) => {
-      const [supplyRaw] = await Promise.allSettled([
+      const [supplyRaw, nameRaw, symbolRaw] = await Promise.allSettled([
         publicClient.readContract({ address: pool.addr, abi: POOL_ABI, functionName: 'totalSupply' }),
+        publicClient.readContract({ address: pool.addr, abi: POOL_ABI, functionName: 'name' }),
+        publicClient.readContract({ address: pool.addr, abi: POOL_ABI, functionName: 'symbol' }),
       ])
 
       const totalDeposits = supplyRaw.status === 'fulfilled'
@@ -82,11 +86,16 @@ export async function getTownSquareMarkets(): Promise<TownSquareMarket[]> {
         : 0
       if (totalDeposits === 0) return null
 
+      const poolName   = nameRaw.status   === 'fulfilled' ? String(nameRaw.value)   : ''
+      const poolSymbol = symbolRaw.status === 'fulfilled' ? String(symbolRaw.value) : ''
+
       const priceUSD = pool.symbol === 'USDC' ? 1 : monPrice
 
       return {
         address:       pool.addr,
         asset:         pool.symbol,
+        poolSymbol,
+        poolName,
         totalDeposits,
         totalBorrows:  0,
         supplyAPY:     0,

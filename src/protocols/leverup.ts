@@ -46,13 +46,15 @@ const LEVERUP_MAIN_ABI = [
 ] as const
 
 export interface LeverUpStats {
-  tvlUSD:       number    // collateral locked
-  longOI:       number    // long open interest (USD)
-  shortOI:      number    // short open interest (USD)
-  totalOI:      number
-  lvusdSupply:  number    // LVUSD tokens in circulation
-  lvmonSupply:  number    // LVMON tokens in circulation
-  protocol:     'leverup'
+  tvlUSD:                 number    // collateral locked
+  longOI:                 number    // long open interest (USD)
+  shortOI:                number    // short open interest (USD)
+  totalOI:                number
+  lvusdSupply:            number    // LVUSD tokens in circulation
+  lvmonSupply:            number    // LVMON tokens in circulation
+  collateralizationRatio: number    // tvlUSD / lvusdSupply — collateral coverage of LVUSD
+  lvusdBacking:           number    // MON-denominated collateral backing LVUSD
+  protocol:               'leverup'
 }
 
 /**
@@ -91,14 +93,19 @@ export async function getLeverUpStats(): Promise<LeverUpStats> {
   // TVL = LVUSD supply (1:1 USD) + LVMON supply * MON price
   const tvlUSD = lvusdSupply + lvmonSupply * monPrice + collateral
 
+  const collateralizationRatio = lvusdSupply > 0 ? tvlUSD / lvusdSupply : 0
+  const lvusdBacking = lvmonSupply * monPrice + collateral
+
   return {
-    tvlUSD:      Math.max(tvlUSD, lvusdSupply),   // LVUSD supply is min TVL
-    longOI:      longOI * monPrice,
-    shortOI:     shortOI * monPrice,
-    totalOI:     (longOI + shortOI) * monPrice,
+    tvlUSD:                 Math.max(tvlUSD, lvusdSupply),   // LVUSD supply is min TVL
+    longOI:                 longOI * monPrice,
+    shortOI:                shortOI * monPrice,
+    totalOI:                (longOI + shortOI) * monPrice,
     lvusdSupply,
     lvmonSupply,
-    protocol:    'leverup',
+    collateralizationRatio,
+    lvusdBacking,
+    protocol:               'leverup',
   }
 }
 

@@ -35,7 +35,10 @@ export const SUMER_ADDRESSES = {
 
 // Compound V2-compatible comptroller ABI
 const COMPTROLLER_ABI = [
-  { name: 'getAllMarkets', type: 'function' as const, inputs: [], outputs: [{ type: 'address[]' }], stateMutability: 'view' as const },
+  { name: 'getAllMarkets',                type: 'function' as const, inputs: [], outputs: [{ type: 'address[]' }], stateMutability: 'view' as const },
+  { name: 'borrowCaps',                  type: 'function' as const, inputs: [{ name: 'market', type: 'address' }], outputs: [{ type: 'uint256' }], stateMutability: 'view' as const },
+  { name: 'closeFactorMantissa',         type: 'function' as const, inputs: [], outputs: [{ type: 'uint256' }], stateMutability: 'view' as const },
+  { name: 'liquidationIncentiveMantissa', type: 'function' as const, inputs: [], outputs: [{ type: 'uint256' }], stateMutability: 'view' as const },
 ] as const
 
 // Compound V2-compatible cToken (sdr-token) ABI
@@ -59,15 +62,18 @@ const ERC20_ABI = [
 const BLOCKS_PER_YEAR = 2_160_000
 
 export interface SumerMarket {
-  address:      string
-  symbol:       string
-  asset:        string
-  totalSupply:  number   // in asset units
-  totalBorrows: number   // in asset units
-  supplyAPY:    number   // annualized
-  borrowAPY:    number   // annualized
-  tvlUSD:       number
-  protocol:     'sumer'
+  address:              string
+  symbol:               string
+  asset:                string
+  totalSupply:          number   // in asset units
+  totalBorrows:         number   // in asset units
+  supplyAPY:            number   // annualized
+  borrowAPY:            number   // annualized
+  tvlUSD:               number
+  borrowCap:            number   // max borrows allowed (0 = unlimited)
+  closeFactor:          number   // fraction of debt that can be liquidated per call (0..1)
+  liquidationIncentive: number   // bonus multiplier for liquidators (e.g. 1.08 = 8% bonus)
+  protocol:             'sumer'
 }
 
 /**
@@ -98,11 +104,18 @@ export async function getSumerMarkets(): Promise<SumerMarket[]> {
     ? (allMarkets as `0x${string}`[])
     : [SUMER_ADDRESSES.sdrMON, SUMER_ADDRESSES.sdrUSDC, SUMER_ADDRESSES.sdrWETH]
 
-  const [monPrice, ethPrice, btcPrice] = await Promise.all([
-    getVerifiedPrice('MON').then(r => r.bestPrice),
-    getVerifiedPrice('WETH').then(r => r.bestPrice),
-    getVerifiedPrice('WBTC').then(r => r.bestPrice),
+  const [[monPrice, ethPrice, btcPrice], closeFactorRaw, liquidationIncentiveRaw] = await Promise.all([
+    Promise.all([
+      getVerifiedPrice('MON').then(r => r.bestPrice),
+      getVerifiedPrice('WETH').then(r => r.bestPrice),
+      getVerifiedPrice('WBTC').then(r => r.bestPrice),
+    ]),
+    publicClient.readContract({ address: SUMER_ADDRESSES.Comptroller, abi: COMPTROLLER_ABI, functionName: 'closeFactorMantissa' }).catch(() => null),
+    publicClient.readContract({ address: SUMER_ADDRESSES.Comptroller, abi: COMPTROLLER_ABI, functionName: 'liquidationIncentiveMantissa' }).catch(() => null),
   ])
+
+  const closeFactor          = closeFactorRaw          !== null ? Number(closeFactorRaw)          / 1e18 : 0
+  const liquidationIncentive = liquidationIncentiveRaw !== null ? Number(liquidationIncentiveRaw) / 1e18 : 0
 
   const PRICE_MAP: Record<string, number> = {
     MON: monPrice, WMON: monPrice,
@@ -150,9 +163,16 @@ export async function getSumerMarkets(): Promise<SumerMarket[]> {
       const price  = PRICE_MAP[assetSymbol.toUpperCase()] ?? 1
       const tvlUSD = totalSupply * price
 
+      const borrowCapRaw = await publicClient.readContract({
+        address: SUMER_ADDRESSES.Comptroller, abi: COMPTROLLER_ABI,
+        functionName: 'borrowCaps', args: [addr],
+      }).catch(() => null)
+      const borrowCap = borrowCapRaw !== null ? Number(borrowCapRaw as bigint) / 1e18 : 0
+
       return {
         address: addr, symbol, asset: assetSymbol,
         totalSupply, totalBorrows, supplyAPY, borrowAPY, tvlUSD,
+        borrowCap, closeFactor, liquidationIncentive,
         protocol: 'sumer' as const,
       } satisfies SumerMarket
     })

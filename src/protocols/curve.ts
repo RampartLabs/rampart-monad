@@ -24,13 +24,19 @@ const STABLE_SYMBOLS = new Set(['USDC', 'USDT', 'USDT0', 'AUSD', 'DAI'])
 const WMON_SYMBOLS   = new Set(['WMON', 'MON'])
 
 const META_REGISTRY_ABI = [
-  { name: 'pool_count',   type: 'function' as const, inputs: [], outputs: [{ type: 'uint256' }], stateMutability: 'view' as const },
-  { name: 'pool_list',    type: 'function' as const, inputs: [{ type: 'uint256', name: 'i' }], outputs: [{ type: 'address' }], stateMutability: 'view' as const },
+  { name: 'pool_count',    type: 'function' as const, inputs: [], outputs: [{ type: 'uint256' }], stateMutability: 'view' as const },
+  { name: 'pool_list',     type: 'function' as const, inputs: [{ type: 'uint256', name: 'i' }], outputs: [{ type: 'address' }], stateMutability: 'view' as const },
   { name: 'get_pool_name', type: 'function' as const, inputs: [{ type: 'address', name: 'pool' }], outputs: [{ type: 'string' }], stateMutability: 'view' as const },
   { name: 'get_pool_coins', type: 'function' as const, inputs: [{ type: 'address', name: 'pool' }], outputs: [{ type: 'address[8]' }], stateMutability: 'view' as const },
   { name: 'get_balances',  type: 'function' as const, inputs: [{ type: 'address', name: 'pool' }], outputs: [{ type: 'uint256[8]' }], stateMutability: 'view' as const },
   { name: 'get_fees',      type: 'function' as const, inputs: [{ type: 'address', name: 'pool' }], outputs: [{ type: 'uint256[10]' }], stateMutability: 'view' as const },
   { name: 'get_n_coins',   type: 'function' as const, inputs: [{ type: 'address', name: 'pool' }], outputs: [{ type: 'uint256[2]' }], stateMutability: 'view' as const },
+  { name: 'get_A',         type: 'function' as const, inputs: [{ type: 'address', name: 'pool' }], outputs: [{ type: 'uint256' }], stateMutability: 'view' as const },
+] as const
+
+const CURVE_POOL_ABI = [
+  { name: 'admin_fee',        type: 'function' as const, inputs: [], outputs: [{ type: 'uint256' }], stateMutability: 'view' as const },
+  { name: 'get_virtual_price', type: 'function' as const, inputs: [], outputs: [{ type: 'uint256' }], stateMutability: 'view' as const },
 ] as const
 
 const ERC20_ABI = [
@@ -39,25 +45,28 @@ const ERC20_ABI = [
 ] as const
 
 export interface CurvePool {
-  address:      string
-  name:         string
-  coins:        string[]
-  coinDecimals: number[]
-  balances:     number[]
-  fee:          number
-  tvlUSD:       number
-  protocol:     'curve'
+  address:       string
+  name:          string
+  coins:         string[]
+  coinDecimals:  number[]
+  balances:      number[]
+  fee:           number
+  adminFee:      number   // protocol fee as fraction of swap fee (0..1)
+  amplification: number   // A coefficient — liquidity concentration (stable pools)
+  virtualPrice:  number   // pool share price in USD (health indicator, ~1 for healthy)
+  tvlUSD:        number
+  protocol:      'curve'
 }
 
 const ZERO_ADDR = '0x0000000000000000000000000000000000000000'
 
-async function estimateTvl(coins: string[], balances: number[], coinDecimals: number[], monPrice: number): Promise<number> {
+async function estimateTvl(coins: string[], balances: number[], coinDecimals: number[], monPrice: number | null): Promise<number> {
   let tvl = 0
   for (let i = 0; i < coins.length; i++) {
     if (coins[i] === ZERO_ADDR) break
     const bal = balances[i]
     if (STABLE_SYMBOLS.has(coins[i])) tvl += bal
-    else if (WMON_SYMBOLS.has(coins[i])) tvl += bal * monPrice
+    else if (WMON_SYMBOLS.has(coins[i]) && monPrice !== null) tvl += bal * monPrice
   }
   return tvl
 }
@@ -96,7 +105,8 @@ export async function getCurvePools(maxPools = 50): Promise<CurvePool[]> {
     .filter(r => r.status === 'success')
     .map(r => r.result as `0x${string}`)
 
-  const monPrice = await getVerifiedPrice('MON')
+  const monPriceRaw = await getVerifiedPrice('MON').catch(() => null)
+  const monPrice = monPriceRaw?.bestPrice ?? null
 
   const results = await Promise.allSettled(
     pools.map(async (pool) => {
@@ -132,9 +142,21 @@ export async function getCurvePools(maxPools = 50): Promise<CurvePool[]> {
         (b, i) => Number(b) / 10 ** (coinDecimals[i] ?? 18)
       )
       const fee    = Number((feesRaw as unknown as bigint[])[0]) / 1e10
-      const tvlUSD = await estimateTvl(coins, balances, coinDecimals, monPrice.bestPrice)
+      const tvlUSD = await estimateTvl(coins, balances, coinDecimals, monPrice)
 
-      return { address: pool, name: name as string, coins, coinDecimals, balances, fee, tvlUSD, protocol: 'curve' as const }
+      const [amplificationRaw, adminFeeRaw, virtualPriceRaw] = await Promise.all([
+        publicClient.readContract({ address: META_REGISTRY, abi: META_REGISTRY_ABI, functionName: 'get_A', args: [pool] }).catch(() => null),
+        publicClient.readContract({ address: pool, abi: CURVE_POOL_ABI, functionName: 'admin_fee' }).catch(() => null),
+        publicClient.readContract({ address: pool, abi: CURVE_POOL_ABI, functionName: 'get_virtual_price' }).catch(() => null),
+      ])
+
+      return {
+        address: pool, name: name as string, coins, coinDecimals, balances, fee, tvlUSD,
+        amplification: amplificationRaw !== null ? Number(amplificationRaw as bigint) : 0,
+        adminFee:      adminFeeRaw      !== null ? Number(adminFeeRaw      as bigint) / 1e10 : 0,
+        virtualPrice:  virtualPriceRaw  !== null ? Number(virtualPriceRaw  as bigint) / 1e18 : 0,
+        protocol: 'curve' as const,
+      }
     }),
   )
 
