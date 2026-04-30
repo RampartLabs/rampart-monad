@@ -27,6 +27,9 @@ import { getCovenantStats, COVENANT_ADDRESSES } from '../src/protocols/covenant'
 // Phase 34 — Multipli.fi
 import { getMultipliVault, MULTIPLI_ADDRESSES } from '../src/protocols/multipli'
 
+// Phase 53 — Mu Digital
+import { getMuDigitalStats, getMuDigitalTVL, MU_DIGITAL_ADDRESSES } from '../src/protocols/mudigital'
+
 // ─── Renzo ───────────────────────────────────────────────────────────────────
 
 describe('Renzo Protocol (Phase 26)', () => {
@@ -188,4 +191,31 @@ describe('Multipli.fi RWA Vaults (Phase 34)', () => {
     expect(vault.totalAssets).toBeGreaterThanOrEqual(0)
     console.log(`  Multipli xUSDC: totalAssets=${vault.totalAssets.toFixed(2)} rate=${vault.exchangeRate.toFixed(6)} TVL=$${vault.tvlUSD.toFixed(0)}`)
   })
+})
+
+// ─── Mu Digital ───────────────────────────────────────────────────────────────
+
+describe('Mu Digital RWA (Phase 53)', () => {
+  it('MU_DIGITAL_ADDRESSES has correct contracts', () => {
+    expect(MU_DIGITAL_ADDRESSES.AZND).toMatch(/^0x[0-9a-fA-F]{40}$/)
+    expect(MU_DIGITAL_ADDRESSES.loAZND).toMatch(/^0x[0-9a-fA-F]{40}$/)
+    expect(MU_DIGITAL_ADDRESSES.muBOND).toMatch(/^0x[0-9a-fA-F]{40}$/)
+  })
+
+  it('getMuDigitalStats returns valid stats', async () => {
+    const stats = await getMuDigitalStats()
+    expect(stats.protocol).toBe('mudigital')
+    expect(stats.azndSupply).toBeGreaterThanOrEqual(0)
+    expect(stats.loAzndSupply).toBeGreaterThanOrEqual(0)
+    expect(stats.muBondSupply).toBeGreaterThanOrEqual(0)
+    expect(stats.tvlUSD).toBeGreaterThanOrEqual(0)
+    expect(stats.tvlUSD).toBeCloseTo(stats.azndSupply + stats.loAzndSupply + stats.muBondSupply, 0)
+    console.log(`  Mu Digital: AZND=${stats.azndSupply.toFixed(0)} loAZND=${stats.loAzndSupply.toFixed(0)} muBOND=${stats.muBondSupply.toFixed(0)} TVL=$${stats.tvlUSD.toFixed(0)}`)
+  }, 30_000)
+
+  it('getMuDigitalTVL returns non-negative number', async () => {
+    const tvl = await getMuDigitalTVL()
+    expect(tvl).toBeGreaterThanOrEqual(0)
+    console.log(`  Mu Digital TVL: $${tvl.toLocaleString()}`)
+  }, 30_000)
 })

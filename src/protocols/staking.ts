@@ -4,7 +4,7 @@
  * Covers all four native LSTs (aprMON, gMON, shMON, sMON) plus the Mellow vshMON vault.
  * APR is derived from on-chain exchange-rate deltas over multiple block windows.
  *
- * **TVL:** ~$500M combined
+ * **TVL:** ~500M MON combined (~$13M USD at current prices)
  * **Type:** Liquid Staking Aggregator
  * **Docs:** https://monad.xyz
  *

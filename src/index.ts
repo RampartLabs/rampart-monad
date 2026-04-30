@@ -183,6 +183,10 @@ export type { TimeswapStats } from './protocols/timeswap'
 export { getDopplerStats, isDopplerAvailable, DOPPLER_ADDRESSES } from './protocols/doppler'
 export type { DopplerStats } from './protocols/doppler'
 
+// Phase 53 — Mu Digital (RWA structured credit, AZND + muBOND)
+export { getMuDigitalStats, getMuDigitalTVL, MU_DIGITAL_ADDRESSES } from './protocols/mudigital'
+export type { MuDigitalStats } from './protocols/mudigital'
+
 // Layer 2: Class
 export { Rampart } from './client'
 

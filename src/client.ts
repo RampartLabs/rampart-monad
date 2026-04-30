@@ -18,6 +18,7 @@ import { getMarketOverview as getMarketIntelligence, getBestYields as getTopYiel
 import { getNadFunTokens, getTrendingMemes } from './protocols/nadfun'
 import { getPerpVaultStats, getFundingRates, getPerplMarkets, getMondayMarkets, getPerplTVL, getTotalPerpTVL } from './protocols/perps'
 import { getBalancerPools, getBalancerTVL } from './protocols/balancer'
+import { getMuDigitalStats, getMuDigitalTVL } from './protocols/mudigital'
 import type {
   TokenPrice, StakingAPR, LendingRate, Pool, Orderbook,
   SwapSimulation, PriceComparison, YieldComparison, YieldStrategy,
@@ -176,4 +177,8 @@ export class Rampart {
   // ── Balancer V3 ──────────────────────────────────────────
   getBalancerPools(maxPools?: number):  Promise<import('./protocols/balancer').BalancerPool[]> { return getBalancerPools(maxPools) }
   getBalancerTVL():                     Promise<number>                                        { return getBalancerTVL() }
+
+  // ── Mu Digital (RWA) ─────────────────────────────────────
+  getMuDigitalStats(): Promise<import('./protocols/mudigital').MuDigitalStats> { return getMuDigitalStats() }
+  getMuDigitalTVL():   Promise<number>                                          { return getMuDigitalTVL() }
 }

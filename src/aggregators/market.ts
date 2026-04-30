@@ -43,6 +43,10 @@ import { getLagoonTVL }         from '../protocols/lagoon'
 import { getEnjoyoorsTVL }      from '../protocols/enjoyoors'
 import { getNablaTVL }          from '../protocols/nabla'
 import { getTownSquareTVL }     from '../protocols/townsquare'
+import { getBalancerTVL }       from '../protocols/balancer'
+import { getKuruPools as _getKuruPoolsDex } from '../protocols/kuru'
+import { getCurvePools }        from '../protocols/curve'
+import { getMuDigitalTVL }      from '../protocols/mudigital'
 
 // ─── Public types ─────────────────────────────────────────────────────────────
 
@@ -197,7 +201,8 @@ async function buildYields(): Promise<YieldOpportunity[]> {
 
 async function buildTVL(monPrice: number): Promise<TVLBreakdown> {
   const [lsts, euler, lending, curvanceTVL, renzoStats, multipliTVL, beefyTVL, upshiftVaults, morphoTVL,
-         sherpaTVL, accountableTVL, folksTVL, sumerTVL, lagoonTVL, enjoyoorsTVL, nablaTVL, townSquareTVL] =
+         sherpaTVL, accountableTVL, folksTVL, sumerTVL, lagoonTVL, enjoyoorsTVL, nablaTVL, townSquareTVL,
+         balancerTVL, kuruPools, curvePools, muDigitalTVL] =
     await Promise.all([
       getAllLSTStats(),
       getEulerVaults(108),
@@ -216,6 +221,10 @@ async function buildTVL(monPrice: number): Promise<TVLBreakdown> {
       getEnjoyoorsTVL().catch(() => 0),
       getNablaTVL().catch(() => 0),
       getTownSquareTVL().catch(() => 0),
+      getBalancerTVL().catch(() => 0),
+      _getKuruPoolsDex().catch(() => []),
+      getCurvePools().catch(() => []),
+      getMuDigitalTVL().catch(() => 0),
     ])
 
   const liquidStaking  = lsts.reduce((s, l) => s + l.tvl * monPrice, 0)
@@ -233,11 +242,16 @@ async function buildTVL(monPrice: number): Promise<TVLBreakdown> {
   const yieldOptimizer = beefyTVL + upshiftTVL + enjoyoorsTVL + nablaTVL
 
   const restaking = renzoStats.tvlUSD
-  const rwa       = multipliTVL
+  const rwa       = multipliTVL + (muDigitalTVL as number)
 
-  const total = liquidStaking + lendingTVL + rwa + restaking + yieldOptimizer
+  // DEX TVL: Balancer (USD from API) + Kuru quote reserves + Curve pools
+  const kuruTVL   = kuruPools.reduce((s: number, p: any) => s + (p.quoteReserve ?? 0) * 2, 0)
+  const curveTVL  = curvePools.reduce((s: number, p: any) => s + (p.tvlUSD ?? 0), 0)
+  const dexTVL    = balancerTVL + kuruTVL + curveTVL
 
-  return { liquidStaking, lending: lendingTVL, dex: 0, rwa, restaking, yieldOptimizer, total }
+  const total = liquidStaking + lendingTVL + rwa + restaking + yieldOptimizer + dexTVL
+
+  return { liquidStaking, lending: lendingTVL, dex: dexTVL, rwa, restaking, yieldOptimizer, total }
 }
 
 async function buildDexSummary(monPrice: number): Promise<DexSummary> {

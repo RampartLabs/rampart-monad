@@ -184,9 +184,7 @@ export async function getMorphoVaults(maxVaults = 50, listedOnly = true): Promis
  */
 export async function getMorphoTVL(): Promise<number> {
   const vaults = await getMorphoVaults()
-  return vaults
-    .filter(v => ['USDC', 'USDT', 'AUSD', 'USDT0', 'USD1'].includes(v.assetSymbol))
-    .reduce((s, v) => s + v.totalAssets, 0)
+  return vaults.reduce((s, v) => s + v.totalAssets, 0)
 }
 
 /**
