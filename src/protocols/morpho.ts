@@ -1,10 +1,11 @@
 /**
  * @module Morpho
  * @description MetaMorpho vault aggregator for Monad mainnet.
- * Discovers vaults via the MetaMorpho factory event log, computes supply APY
- * from on-chain exchange-rate deltas, and returns sorted vault metadata.
+ * Vaults are hardcoded from verified on-chain data (Monad RPC limits eth_getLogs
+ * to 100 blocks, making factory event scanning impractical). APY is computed
+ * from on-chain exchange-rate deltas.
  *
- * **TVL:** ~$5M
+ * **TVL:** ~$30M
  * **Type:** Lending (MetaMorpho Vaults)
  * **Docs:** https://docs.morpho.org
  *
@@ -17,24 +18,23 @@
 import { publicClient } from '../chain'
 import { MONAD_BLOCKS_PER_YEAR } from '../chain'
 
-export const MORPHO_BLUE:      `0x${string}` = '0xd5d960e8c380b724a48ac59e2dff1b2cb4a1eaee'
-const METAMORPHO_FACTORY: `0x${string}` = '0xc1108c5d98dc09be44e656a9e34b04d37b90a50d'
+export const MORPHO_BLUE: `0x${string}` = '0xd5d960e8c380b724a48ac59e2dff1b2cb4a1eaee'
 const APR_BLOCK_DELTA = 72_000n
 
-const FACTORY_EVENT_ABI = [{
-  name: 'CreateMetaMorpho',
-  type: 'event' as const,
-  inputs: [
-    { name: 'metaMorpho', type: 'address', indexed: true },
-    { name: 'caller',     type: 'address', indexed: true },
-    { name: 'initialOwner',     type: 'address',  indexed: false },
-    { name: 'initialTimelock', type: 'uint256',   indexed: false },
-    { name: 'asset',            type: 'address',  indexed: true },
-    { name: 'name',             type: 'string',   indexed: false },
-    { name: 'symbol',           type: 'string',   indexed: false },
-    { name: 'salt',             type: 'bytes32',  indexed: false },
-  ],
-}] as const
+// Verified MetaMorpho vaults on Monad Mainnet (Monad RPC limits eth_getLogs to 100 blocks)
+const KNOWN_VAULTS: `0x${string}`[] = [
+  '0x78999cc96d2Ba0341588C60CcB0E91c6C33CF371', // Hyperithm USDC Apex (hyperUSDCa)
+  '0xe09A93786275546690247d70f1767cF0b69e8Ea0', // Hyperithm cbBTC Apex (hypercbBTCa)
+  '0xbeEFf443C3CbA3E369DA795002243BeaC311aB83', // Steakhouse High Yield USDC (bbqUSDC)
+  '0xbeeff96D65Cb80a0029dc9D3C4d7306c3C3A6253', // Steakhouse High Yield ETH (bbqETH)
+  '0xbeeff300E9A9caeC7beEA740ab8758D33b777509', // Steakhouse High Yield USDT0 (bbqUSDT0)
+  '0xBeEFfB65df79Baac701307c9605b7aB207355Fdb', // Steakhouse High Yield USD1 (bbqUSD1)
+  '0xbeeffeA75cFC4128ebe10C8D7aE22016D215060D', // Steakhouse High Yield AUSD (bbqAUSD)
+  '0xbeeff421948cDE29644a63FBA4ef5e5a621075d0', // Steakhouse High Yield cbBTC (bbqCBBTC)
+  '0x0ED3615ff949C8A34D15441970900E849A3409FC', // Unified Labs RWA Vault (urRWA)
+  '0xEceF08A3cD83054e8FF6D8Cb9cE41a36b81E8d7E', // UltraYield cbBTC (UYCBBTC)
+  '0x80017bF0f793EBbE9679Cd61ff0e395B62CAbB59', // August Digital USDC (AugustUSDCv2)
+]
 
 const VAULT_ABI = [
   { name: 'asset',           type: 'function' as const, inputs: [], outputs: [{ type: 'address' }], stateMutability: 'view' as const },
@@ -68,26 +68,8 @@ export interface MorphoVault {
   protocol:       'morpho'
 }
 
-async function discoverVaults(maxVaults: number): Promise<`0x${string}`[]> {
-  // Scan last 5M blocks (~23 days at 400ms blocks) — MetaMorpho was deployed recently on Monad
-  // Use numeric toBlock (not 'latest') to avoid RPC range-limit errors
-  const blockNow = await publicClient.getBlockNumber().catch(() => 0n)
-  if (blockNow === 0n) return []
-  const fromBlock = blockNow > 5_000_000n ? blockNow - 5_000_000n : 1n
-  try {
-    const logs = await publicClient.getLogs({
-      address: METAMORPHO_FACTORY,
-      event:   FACTORY_EVENT_ABI[0],
-      fromBlock,
-      toBlock: blockNow,
-    })
-    return logs
-      .map(l => (l.args as Record<string, unknown>).metaMorpho as `0x${string}` | undefined)
-      .filter((a): a is `0x${string}` => !!a)
-      .slice(0, maxVaults)
-  } catch {
-    return []
-  }
+function discoverVaults(maxVaults: number): `0x${string}`[] {
+  return KNOWN_VAULTS.slice(0, maxVaults)
 }
 
 async function calcVaultAPY(vault: `0x${string}`): Promise<number> {
@@ -124,7 +106,7 @@ async function calcVaultAPY(vault: `0x${string}`): Promise<number> {
  * @category Lending
  */
 export async function getMorphoVaults(maxVaults = 50): Promise<MorphoVault[]> {
-  const addresses = await discoverVaults(maxVaults)
+  const addresses = discoverVaults(maxVaults)
   if (addresses.length === 0) return []
 
   const results = await Promise.allSettled(
@@ -197,7 +179,7 @@ export async function getMorphoVaults(maxVaults = 50): Promise<MorphoVault[]> {
 export async function getMorphoTVL(): Promise<number> {
   const vaults = await getMorphoVaults()
   return vaults
-    .filter(v => ['USDC', 'USDT', 'AUSD', 'USDT0'].includes(v.assetSymbol))
+    .filter(v => ['USDC', 'USDT', 'AUSD', 'USDT0', 'USD1'].includes(v.assetSymbol))
     .reduce((s, v) => s + v.totalAssets, 0)
 }
 

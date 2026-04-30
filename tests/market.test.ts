@@ -7,7 +7,7 @@ describe('Market Intelligence (Phase 14)', () => {
     expect(yields.length).toBeGreaterThan(0)
     for (const y of yields) {
       expect(y.apy).toBeGreaterThanOrEqual(0)
-      expect(['supply', 'stake', 'lp']).toContain(y.type)
+      expect(['supply', 'stake', 'lp', 'vault']).toContain(y.type)
     }
     console.log('  Top yield opportunities:')
     yields.forEach(y =>

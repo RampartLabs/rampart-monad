@@ -1,38 +1,28 @@
 /**
  * @module Multipli
- * @description Multipli.fi RWA yield vault on Monad Mainnet. The `xRWAUSDI`
- * token represents a share in a tokenized portfolio of US Treasuries and
- * money-market instruments. The vault is USD-denominated (USDC-based, 6
- * decimals) and follows the ERC4626 interface.
+ * @description Multipli.fi USDC yield vault on Monad Mainnet. The `xUSDC`
+ * vault token represents shares in a USDC pool earning real-world yield
+ * (US Treasuries / money-market instruments). ERC4626 interface.
  *
- * **TVL:** ~$50M
+ * **TVL:** ~$3K (early stage, vault launched recently on Monad)
  * **Type:** RWA Yield Vault
  * **Docs:** https://multipli.fi
  *
  * Available functions:
- * - {@link getMultipliVault} — xRWAUSDI vault stats (TVL, APY, exchange rate)
- * - {@link getMultipliTVL} — total USD in Multipli RWA vault
+ * - {@link getMultipliVault} — xUSDC vault stats (TVL, APY, exchange rate)
+ * - {@link getMultipliTVL} — total USD in Multipli USDC vault
  */
-
-// ============================================================
-// Rampart SDK — Multipli.fi on Monad
-// RWA (Real World Assets) yield protocol — tokenized Treasury/bond vaults
-// NOTE: xRWAUSDI mainnet address not yet confirmed in official registry.
-// Previous address 0x754704... was USDC, not Multipli. Functions return
-// empty data until address is verified.
-// ============================================================
 
 import { publicClient } from '../chain'
 
 /**
  * Deployed Multipli contract addresses on Monad Mainnet.
- * xRWAUSDI address is pending mainnet verification — not yet in the
- * official monad-crypto/protocols registry.
  *
  * @category Yield
  */
 export const MULTIPLI_ADDRESSES = {
-  xRWAUSDI: '' as `0x${string}`,
+  xUSDC:    '0xd74FB32112b1eF5b4C428Fead8dA8d85A0019009' as `0x${string}`,
+  rwaUSDi:  '0x650b616b46fF94000Eb115926aB8393B90788D76' as `0x${string}`,
 } as const
 
 const ERC4626_ABI = [
@@ -57,11 +47,11 @@ export interface MultipliVault {
 }
 
 /**
- * Fetch stats for Multipli.fi's xRWAUSDI RWA vault on Monad.
+ * Fetch stats for Multipli.fi's xUSDC vault on Monad.
  *
  * Reads `totalAssets`, `totalSupply`, `decimals`, `name`, `symbol`, and the
  * `convertToAssets(1e6)` exchange rate from the ERC4626 vault in a single
- * parallel batch. Because the vault is USD-denominated, `tvlUSD` equals
+ * parallel batch. Because the vault is USDC-denominated, `tvlUSD` equals
  * `totalAssets` directly (no price oracle required).
  *
  * @returns Vault snapshot including supply, exchange rate (USD/share), and TVL
@@ -69,21 +59,20 @@ export interface MultipliVault {
  * @example
  * ```typescript
  * const vault = await getMultipliVault()
- * // → { symbol: 'xRWAUSDI', totalAssets: 50000000, exchangeRate: 1.05, tvlUSD: 50000000, ... }
+ * // → { symbol: 'xUSDC', totalAssets: 3189, exchangeRate: 1.014, tvlUSD: 3189, ... }
  * ```
  *
  * @category Yield
  */
 export async function getMultipliVault(): Promise<MultipliVault> {
-  const addr = MULTIPLI_ADDRESSES.xRWAUSDI
-  if (!addr) return { name: 'xRWAUSDI', symbol: 'xRWAUSDI', address: '', totalAssets: 0, totalSupply: 0, exchangeRate: 1, tvlUSD: 0, decimals: 6, protocol: 'multipli' }
+  const addr = MULTIPLI_ADDRESSES.xUSDC
 
   const [totalAssetsRaw, totalSupplyRaw, decimalsRaw, name, symbol, converted] = await Promise.all([
     publicClient.readContract({ address: addr, abi: ERC4626_ABI, functionName: 'totalAssets' }).catch(() => 0n),
     publicClient.readContract({ address: addr, abi: ERC4626_ABI, functionName: 'totalSupply' }).catch(() => 0n),
     publicClient.readContract({ address: addr, abi: ERC4626_ABI, functionName: 'decimals' }).catch(() => 18),
-    publicClient.readContract({ address: addr, abi: ERC4626_ABI, functionName: 'name' }).catch(() => 'xRWAUSDI'),
-    publicClient.readContract({ address: addr, abi: ERC4626_ABI, functionName: 'symbol' }).catch(() => 'xRWAUSDI'),
+    publicClient.readContract({ address: addr, abi: ERC4626_ABI, functionName: 'name' }).catch(() => 'xUSDC'),
+    publicClient.readContract({ address: addr, abi: ERC4626_ABI, functionName: 'symbol' }).catch(() => 'xUSDC'),
     publicClient.readContract({ address: addr, abi: ERC4626_ABI, functionName: 'convertToAssets', args: [BigInt(1e6)] }).catch(() => BigInt(1e6)),
   ])
 
@@ -109,7 +98,7 @@ export async function getMultipliVault(): Promise<MultipliVault> {
 /**
  * Return the total Multipli.fi TVL in USD on Monad.
  *
- * @returns `totalAssets` from the xRWAUSDI vault expressed in USD
+ * @returns `totalAssets` from the xUSDC vault expressed in USD
  *
  * @example
  * ```typescript

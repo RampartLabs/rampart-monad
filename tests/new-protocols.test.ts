@@ -177,16 +177,15 @@ describe('Covenant Protocol (Phase 33)', () => {
 // ─── Multipli.fi ─────────────────────────────────────────────────────────────
 
 describe('Multipli.fi RWA Vaults (Phase 34)', () => {
-  it('MULTIPLI_ADDRESSES — address pending mainnet verification', () => {
-    // xRWAUSDI mainnet address not yet in official registry — empty until confirmed
-    // 0x754704... was verified to be USDC, not Multipli
-    expect(typeof MULTIPLI_ADDRESSES.xRWAUSDI).toBe('string')
+  it('MULTIPLI_ADDRESSES — xUSDC vault deployed on Monad', () => {
+    expect(typeof MULTIPLI_ADDRESSES.xUSDC).toBe('string')
+    expect(MULTIPLI_ADDRESSES.xUSDC).toMatch(/^0x[0-9a-fA-F]{40}$/)
   })
 
   it('getMultipliVault returns valid vault stats', async () => {
     const vault = await getMultipliVault()
     expect(vault.protocol).toBe('multipli')
     expect(vault.totalAssets).toBeGreaterThanOrEqual(0)
-    console.log(`  Multipli xRWAUSDI: totalAssets=${vault.totalAssets.toFixed(2)} rate=${vault.exchangeRate.toFixed(6)} TVL=$${vault.tvlUSD.toFixed(0)}`)
+    console.log(`  Multipli xUSDC: totalAssets=${vault.totalAssets.toFixed(2)} rate=${vault.exchangeRate.toFixed(6)} TVL=$${vault.tvlUSD.toFixed(0)}`)
   })
 })
