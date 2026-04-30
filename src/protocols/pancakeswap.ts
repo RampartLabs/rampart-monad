@@ -149,8 +149,8 @@ const SEED_PAIRS: Array<[string, string]> = [
  *
  * @category DEX
  */
-export async function getPancakeSwapPools(): Promise<Pool[]> {
-  const pools: Pool[] = []
+export async function getPancakeSwapPools(): Promise<PancakeSwapPair[]> {
+  const pools: PancakeSwapPair[] = []
 
   await Promise.allSettled(
     SEED_PAIRS.flatMap(([symA, symB]) =>
@@ -163,14 +163,22 @@ export async function getPancakeSwapPools(): Promise<Pool[]> {
             abi:     FACTORY_ABI,
             functionName: 'getPool',
             args: [tA.address, tB.address, fee],
-          })
+          }) as `0x${string}`
           if (!addr || addr === '0x0000000000000000000000000000000000000000') return
+
+          const [slot0Raw, liquidityRaw] = await Promise.all([
+            publicClient.readContract({ address: addr, abi: POOL_ABI, functionName: 'slot0' }).catch(() => null),
+            publicClient.readContract({ address: addr, abi: POOL_ABI, functionName: 'liquidity' }).catch(() => 0n),
+          ])
+          const s0 = slot0Raw as any
+
           pools.push({
-            protocol: 'pancakeswap-v3' as any,
-            address:  addr,
-            token0:   symA,
-            token1:   symB,
-            fee:      fee / 1_000_000,
+            address:   addr,
+            token0:    symA,
+            token1:    symB,
+            fee,
+            liquidity:  liquidityRaw as bigint,
+            sqrtPrice:  s0?.sqrtPriceX96 ?? 0n,
           })
         } catch {
           // pool doesn't exist for this fee tier

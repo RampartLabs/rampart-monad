@@ -38,17 +38,19 @@ const ERC20_ABI = [
 ] as const
 
 export interface NablaPool {
-  address:    string
-  name:       string
-  asset:      string
-  tvlUSD:     number
-  protocol:   'nabla'
+  address:      string
+  name:         string
+  asset:        string
+  totalSupply:  number   // LP share supply
+  tvlUSD:       number
+  protocol:     'nabla'
 }
 
 async function fetchNablaPool(addr: `0x${string}`, label: string): Promise<NablaPool> {
-  const [worthRaw, assetAddrRaw] = await Promise.allSettled([
+  const [worthRaw, assetAddrRaw, totalSupplyRaw] = await Promise.allSettled([
     publicClient.readContract({ address: addr, abi: POOL_ABI, functionName: 'totalPoolWorth' }),
     publicClient.readContract({ address: addr, abi: POOL_ABI, functionName: 'poolAsset' }),
+    publicClient.readContract({ address: addr, abi: POOL_ABI, functionName: 'totalSupply' }),
   ])
 
   const tvlRaw    = worthRaw.status   === 'fulfilled' ? Number(worthRaw.value as bigint) : 0
@@ -65,8 +67,9 @@ async function fetchNablaPool(addr: `0x${string}`, label: string): Promise<Nabla
     if (dec.status === 'fulfilled') decimals    = Number(dec.value as number)
   }
 
-  const tvlUSD = tvlRaw / (10 ** decimals)
-  return { address: addr, name: label, asset: assetSymbol, tvlUSD, protocol: 'nabla' }
+  const tvlUSD      = tvlRaw / (10 ** decimals)
+  const totalSupply = totalSupplyRaw.status === 'fulfilled' ? Number(totalSupplyRaw.value as bigint) / (10 ** decimals) : 0
+  return { address: addr, name: label, asset: assetSymbol, totalSupply, tvlUSD, protocol: 'nabla' }
 }
 
 /**

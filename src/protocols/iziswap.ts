@@ -64,12 +64,15 @@ const POOL_ABI = [
 ] as const
 
 export interface IZiPool {
-  tokenX:   string
-  tokenY:   string
-  fee:      number
-  address:  string
-  liquidity: bigint
-  protocol: string
+  tokenX:       string
+  tokenY:       string
+  fee:          number
+  address:      string
+  liquidity:    bigint
+  currentPoint: number   // current price tick (integer price point)
+  sqrtPrice96:  bigint   // sqrt price in Q96 format
+  locked:       boolean  // reentrancy lock
+  protocol:     string
 }
 
 const FEE_TIERS = [400, 2000, 10000] as const  // 0.04%, 0.2%, 1%
@@ -121,12 +124,15 @@ export async function getIZiPools(): Promise<IZiPool[]> {
       }).catch(() => null) as any
 
       results.push({
-        tokenX:    symX,
-        tokenY:    symY,
+        tokenX:       symX,
+        tokenY:       symY,
         fee,
-        address:   poolAddr,
-        liquidity: state?.liquidity ?? 0n,
-        protocol:  'iziswap',
+        address:      poolAddr,
+        liquidity:    state?.liquidity    ?? 0n,
+        currentPoint: state?.currentPoint ?? 0,
+        sqrtPrice96:  state?.sqrtPrice_96 ?? 0n,
+        locked:       state?.locked       ?? false,
+        protocol:     'iziswap',
       })
     }
   }

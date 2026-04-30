@@ -93,12 +93,15 @@ const QUOTER_V2_ABI = [
 ] as const
 
 export interface CapricornPool {
-  token0:    string
-  token1:    string
-  fee:       number
-  address:   string
-  liquidity: bigint
-  protocol:  'capricorn'
+  token0:        string
+  token1:        string
+  fee:           number
+  address:       string
+  liquidity:     bigint
+  sqrtPriceX96:  bigint   // current sqrt price in Q96
+  tick:          number   // current tick
+  unlocked:      boolean  // reentrancy lock status
+  protocol:      'capricorn'
 }
 
 const FEE_TIERS    = [500, 3000, 10000] as const
@@ -140,11 +143,20 @@ export async function getCapricornPools(): Promise<CapricornPool[]> {
 
       if (!poolAddr || poolAddr === '0x0000000000000000000000000000000000000000') continue
 
-      const liquidity = await publicClient.readContract({
-        address: poolAddr, abi: POOL_ABI, functionName: 'liquidity',
-      }).catch(() => 0n) as bigint
+      const [liquidity, slot0] = await Promise.all([
+        publicClient.readContract({ address: poolAddr, abi: POOL_ABI, functionName: 'liquidity' }).catch(() => 0n),
+        publicClient.readContract({ address: poolAddr, abi: POOL_ABI, functionName: 'slot0' }).catch(() => null),
+      ])
+      const s0 = slot0 as any
 
-      results.push({ token0: symA, token1: symB, fee, address: poolAddr, liquidity, protocol: 'capricorn' })
+      results.push({
+        token0: symA, token1: symB, fee, address: poolAddr,
+        liquidity:    liquidity as bigint,
+        sqrtPriceX96: s0?.sqrtPriceX96 ?? 0n,
+        tick:         s0?.tick          ?? 0,
+        unlocked:     s0?.unlocked      ?? false,
+        protocol: 'capricorn',
+      })
     }
   }
 

@@ -60,15 +60,16 @@ const ERC20_ABI = [
 ] as const
 
 export interface AccountableVault {
-  address:     string
-  name:        string
-  asset:       string
-  assetSymbol: string
-  totalAssets: number
-  totalSupply: number
-  tvlUSD:      number
-  vaultType:   'fixed-term' | 'open-term' | 'unknown'
-  protocol:    'accountable'
+  address:                string
+  name:                   string
+  asset:                  string
+  assetSymbol:            string
+  totalAssets:            number
+  totalSupply:            number
+  totalPendingRedemptions: number  // ERC-7540: assets queued for withdrawal
+  tvlUSD:                 number
+  vaultType:              'fixed-term' | 'open-term' | 'unknown'
+  protocol:               'accountable'
 }
 
 async function discoverVaultsFromFactory(
@@ -135,17 +136,19 @@ export async function getAccountableVaults(maxVaults = 20): Promise<AccountableV
 
   const results = await Promise.allSettled(
     allVaults.map(async ({ addr, vaultType }) => {
-      const [totalAssetsRaw, totalSupplyRaw, assetAddrRaw, nameRaw] = await Promise.allSettled([
+      const [totalAssetsRaw, totalSupplyRaw, assetAddrRaw, nameRaw, pendingRedemptionsRaw] = await Promise.allSettled([
         publicClient.readContract({ address: addr, abi: VAULT_ABI, functionName: 'totalAssets' }),
         publicClient.readContract({ address: addr, abi: VAULT_ABI, functionName: 'totalSupply' }),
         publicClient.readContract({ address: addr, abi: VAULT_ABI, functionName: 'asset' }),
         publicClient.readContract({ address: addr, abi: VAULT_ABI, functionName: 'name' }),
+        publicClient.readContract({ address: addr, abi: VAULT_ABI, functionName: 'totalPendingRedemptions' }),
       ])
 
-      const totalAssets = totalAssetsRaw.status === 'fulfilled' ? Number(totalAssetsRaw.value as bigint) / 1e6 : 0  // USDC
-      const totalSupply = totalSupplyRaw.status === 'fulfilled' ? Number(totalSupplyRaw.value as bigint) / 1e6 : 0
-      const assetAddr   = assetAddrRaw.status   === 'fulfilled' ? (assetAddrRaw.value as string) : ''
-      const name        = nameRaw.status        === 'fulfilled' ? (nameRaw.value as string)       : addr.slice(0, 10)
+      const totalAssets            = totalAssetsRaw.status      === 'fulfilled' ? Number(totalAssetsRaw.value      as bigint) / 1e6 : 0
+      const totalSupply            = totalSupplyRaw.status      === 'fulfilled' ? Number(totalSupplyRaw.value      as bigint) / 1e6 : 0
+      const totalPendingRedemptions = pendingRedemptionsRaw.status === 'fulfilled' ? Number(pendingRedemptionsRaw.value as bigint) / 1e6 : 0
+      const assetAddr              = assetAddrRaw.status        === 'fulfilled' ? (assetAddrRaw.value as string) : ''
+      const name                   = nameRaw.status             === 'fulfilled' ? (nameRaw.value as string)       : addr.slice(0, 10)
 
       let assetSymbol = 'USDC'
       if (assetAddr) {
@@ -155,7 +158,8 @@ export async function getAccountableVaults(maxVaults = 20): Promise<AccountableV
 
       return {
         address: addr, name, asset: assetAddr, assetSymbol,
-        totalAssets, totalSupply, tvlUSD: totalAssets, vaultType,
+        totalAssets, totalSupply, totalPendingRedemptions,
+        tvlUSD: totalAssets, vaultType,
         protocol: 'accountable' as const,
       } satisfies AccountableVault
     })

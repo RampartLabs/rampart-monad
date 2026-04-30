@@ -54,6 +54,8 @@ const NADFUN_TOKEN_ABI = [
   { name: 'totalSupply',    type: 'function' as const, inputs: [], outputs: [{ type: 'uint256' }], stateMutability: 'view' as const },
   { name: 'reserveMON',     type: 'function' as const, inputs: [], outputs: [{ type: 'uint256' }], stateMutability: 'view' as const },
   { name: 'graduated',      type: 'function' as const, inputs: [], outputs: [{ type: 'bool' }],    stateMutability: 'view' as const },
+  { name: 'creator',        type: 'function' as const, inputs: [], outputs: [{ type: 'address' }], stateMutability: 'view' as const },
+  { name: 'graduationThreshold', type: 'function' as const, inputs: [], outputs: [{ type: 'uint256' }], stateMutability: 'view' as const },
 ] as const
 
 // BONDING_CURVE ABI — global stats
@@ -72,15 +74,17 @@ const CREATOR_MANAGER_ABI = [
 ] as const
 
 export interface MemeToken {
-  address:      string
-  name:         string
-  symbol:       string
-  totalSupply:  number
-  priceMON:     number
-  reserveMON:   number
-  marketCapMON: number
-  graduated:    boolean
-  protocol:     'nadfun'
+  address:             string
+  name:                string
+  symbol:              string
+  totalSupply:         number
+  priceMON:            number
+  reserveMON:          number
+  marketCapMON:        number
+  graduated:           boolean
+  creator:             string   // address that deployed the token
+  graduationThreshold: number   // reserveMON needed to graduate (in MON)
+  protocol:            'nadfun'
 }
 
 export interface NadFunStats {
@@ -92,34 +96,40 @@ export interface NadFunStats {
 
 async function getMemeTokenInfo(address: `0x${string}`): Promise<MemeToken | null> {
   try {
-    const [name, symbol, totalSupply, reserveRaw, graduated] = await Promise.allSettled([
+    const [name, symbol, totalSupply, reserveRaw, graduated, creatorRaw, thresholdRaw] = await Promise.allSettled([
       publicClient.readContract({ address, abi: NADFUN_TOKEN_ABI, functionName: 'name' }),
       publicClient.readContract({ address, abi: NADFUN_TOKEN_ABI, functionName: 'symbol' }),
       publicClient.readContract({ address, abi: NADFUN_TOKEN_ABI, functionName: 'totalSupply' }),
       publicClient.readContract({ address, abi: NADFUN_TOKEN_ABI, functionName: 'reserveMON' }),
       publicClient.readContract({ address, abi: NADFUN_TOKEN_ABI, functionName: 'graduated' }),
+      publicClient.readContract({ address, abi: NADFUN_TOKEN_ABI, functionName: 'creator' }),
+      publicClient.readContract({ address, abi: NADFUN_TOKEN_ABI, functionName: 'graduationThreshold' }),
     ])
 
-    const nameVal      = name.status      === 'fulfilled' ? (name.value as string)       : 'Unknown'
-    const symbolVal    = symbol.status    === 'fulfilled' ? (symbol.value as string)     : '???'
+    const nameVal      = name.status        === 'fulfilled' ? (name.value as string)        : 'Unknown'
+    const symbolVal    = symbol.status      === 'fulfilled' ? (symbol.value as string)      : '???'
     const supplyRaw    = totalSupply.status === 'fulfilled' ? (totalSupply.value as bigint) : 0n
     const reserve      = reserveRaw.status  === 'fulfilled' ? (reserveRaw.value as bigint)  : 0n
     const graduatedVal = graduated.status   === 'fulfilled' ? (graduated.value as boolean)  : false
+    const creatorVal   = creatorRaw.status  === 'fulfilled' ? (creatorRaw.value as string)  : ''
+    const thresholdVal = thresholdRaw.status === 'fulfilled' ? Number(thresholdRaw.value as bigint) / 1e18 : 0
 
-    const supply       = Number(supplyRaw) / 1e18
-    const reserveMON   = Number(reserve)   / 1e18
-    const priceMON     = supply > 0 ? reserveMON / supply : 0
+    const supply     = Number(supplyRaw) / 1e18
+    const reserveMON = Number(reserve)   / 1e18
+    const priceMON   = supply > 0 ? reserveMON / supply : 0
 
     return {
       address,
-      name:         nameVal,
-      symbol:       symbolVal,
-      totalSupply:  supply,
+      name:                nameVal,
+      symbol:              symbolVal,
+      totalSupply:         supply,
       priceMON,
       reserveMON,
-      marketCapMON: priceMON * supply,
-      graduated:    graduatedVal,
-      protocol:     'nadfun',
+      marketCapMON:        priceMON * supply,
+      graduated:           graduatedVal,
+      creator:             creatorVal,
+      graduationThreshold: thresholdVal,
+      protocol:            'nadfun',
     }
   } catch {
     return null

@@ -114,6 +114,21 @@ const LB_PAIR_ABI = [
     ],
     stateMutability: 'view' as const,
   },
+  {
+    name: 'getStaticFeeParameters',
+    type: 'function' as const,
+    inputs: [],
+    outputs: [
+      { name: 'baseFactor',          type: 'uint16' },
+      { name: 'filterPeriod',        type: 'uint16' },
+      { name: 'decayPeriod',         type: 'uint16' },
+      { name: 'reductionFactor',     type: 'uint16' },
+      { name: 'variableFeeControl',  type: 'uint24' },
+      { name: 'protocolShare',       type: 'uint16' },
+      { name: 'maxVolatilityAccumulator', type: 'uint24' },
+    ],
+    stateMutability: 'view' as const,
+  },
 ] as const
 
 const LB_QUOTER_ABI = [
@@ -161,17 +176,19 @@ const ERC20_ABI = [
 // ─── Types ───────────────────────────────────────────────────────────────────
 
 export interface LFJPool {
-  address:    string
-  tokenX:     string       // symbol of tokenX
-  tokenY:     string       // symbol of tokenY
-  tokenXAddr: string
-  tokenYAddr: string
-  binStep:    number       // bin step in bps (e.g. 25 = 0.25% price step per bin)
-  activeId:   number       // current active bin ID
-  price:      number       // tokenX price in tokenY units (from active bin)
-  reserveX:   bigint
-  reserveY:   bigint
+  address:      string
+  tokenX:       string       // symbol of tokenX
+  tokenY:       string       // symbol of tokenY
+  tokenXAddr:   string
+  tokenYAddr:   string
+  binStep:      number       // bin step in bps (e.g. 25 = 0.25% price step per bin)
+  activeId:     number       // current active bin ID
+  price:        number       // tokenX price in tokenY units (from active bin)
+  reserveX:     bigint
+  reserveY:     bigint
   hasLiquidity: boolean
+  baseFee:      number       // base fee in bps (e.g. 15 = 0.15%)
+  protocolShare: number      // fraction of fees going to protocol (0..1)
 }
 
 export interface LFJQuote {
@@ -237,12 +254,13 @@ export async function getLFJPools(maxPools = 50): Promise<LFJPool[]> {
         if (res.status !== 'fulfilled') return
         const pairAddr = res.value as `0x${string}`
         try {
-          const [tokenX, tokenY, binStep, activeId, reserves] = await Promise.all([
+          const [tokenX, tokenY, binStep, activeId, reserves, feeParams] = await Promise.all([
             publicClient.readContract({ address: pairAddr, abi: LB_PAIR_ABI, functionName: 'getTokenX' }),
             publicClient.readContract({ address: pairAddr, abi: LB_PAIR_ABI, functionName: 'getTokenY' }),
             publicClient.readContract({ address: pairAddr, abi: LB_PAIR_ABI, functionName: 'getBinStep' }),
             publicClient.readContract({ address: pairAddr, abi: LB_PAIR_ABI, functionName: 'getActiveId' }),
             publicClient.readContract({ address: pairAddr, abi: LB_PAIR_ABI, functionName: 'getReserves' }),
+            publicClient.readContract({ address: pairAddr, abi: LB_PAIR_ABI, functionName: 'getStaticFeeParameters' }).catch(() => null),
           ])
 
           const [symX, decX, symY, decY] = await Promise.all([
@@ -267,19 +285,24 @@ export async function getLFJPools(maxPools = 50): Promise<LFJPool[]> {
           } catch { /* price stays 0 */ }
 
           const [reserveX, reserveY] = reserves as unknown as [bigint, bigint]
+          const fp = feeParams as any
+          const baseFee      = fp ? Number(fp.baseFactor) * Number(binStep) / 1e6 : 0  // in bps -> fraction
+          const protocolShare = fp ? Number(fp.protocolShare) / 10000 : 0
 
           pools.push({
-            address:    pairAddr,
-            tokenX:     symX as string,
-            tokenY:     symY as string,
-            tokenXAddr: tokenX as string,
-            tokenYAddr: tokenY as string,
-            binStep:    Number(binStep),
-            activeId:   Number(activeId),
+            address:      pairAddr,
+            tokenX:       symX as string,
+            tokenY:       symY as string,
+            tokenXAddr:   tokenX as string,
+            tokenYAddr:   tokenY as string,
+            binStep:      Number(binStep),
+            activeId:     Number(activeId),
             price,
             reserveX,
             reserveY,
             hasLiquidity: reserveX > 0n || reserveY > 0n,
+            baseFee,
+            protocolShare,
           })
         } catch { /* skip this pool */ }
       })

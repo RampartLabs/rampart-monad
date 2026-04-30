@@ -43,6 +43,9 @@ const VAULT_ABI = [
   { name: 'totalAssets',     type: 'function' as const, inputs: [], outputs: [{ type: 'uint256' }], stateMutability: 'view' as const },
   { name: 'convertToAssets', type: 'function' as const, inputs: [{ type: 'uint256', name: 'shares' }], outputs: [{ type: 'uint256' }], stateMutability: 'view' as const },
   { name: 'fee',             type: 'function' as const, inputs: [], outputs: [{ type: 'uint96'  }], stateMutability: 'view' as const },
+  { name: 'supplyQueueLength', type: 'function' as const, inputs: [], outputs: [{ type: 'uint256' }], stateMutability: 'view' as const },
+  { name: 'supplyQueue',     type: 'function' as const, inputs: [{ type: 'uint256', name: 'index' }], outputs: [{ type: 'bytes32' }], stateMutability: 'view' as const },
+  { name: 'curator',         type: 'function' as const, inputs: [], outputs: [{ type: 'address' }], stateMutability: 'view' as const },
 ] as const
 
 const ERC20_ABI = [
@@ -60,6 +63,8 @@ export interface MorphoVault {
   exchangeRate:   number
   supplyAPY:      number
   performanceFee: number
+  curator:        string        // address managing allocation strategy
+  supplyMarkets:  string[]      // bytes32 market IDs this vault allocates to
   protocol:       'morpho'
 }
 
@@ -119,12 +124,22 @@ export async function getMorphoVaults(maxVaults = 50): Promise<MorphoVault[]> {
 
   const results = await Promise.allSettled(
     addresses.map(async (vault) => {
-      const [name, symbol, assetAddr, fee] = await Promise.all([
+      const [name, symbol, assetAddr, fee, curatorAddr, queueLen] = await Promise.all([
         publicClient.readContract({ address: vault, abi: VAULT_ABI, functionName: 'name' }),
         publicClient.readContract({ address: vault, abi: VAULT_ABI, functionName: 'symbol' }),
         publicClient.readContract({ address: vault, abi: VAULT_ABI, functionName: 'asset' }),
         publicClient.readContract({ address: vault, abi: VAULT_ABI, functionName: 'fee' }).catch(() => 0n),
+        publicClient.readContract({ address: vault, abi: VAULT_ABI, functionName: 'curator' }).catch(() => null),
+        publicClient.readContract({ address: vault, abi: VAULT_ABI, functionName: 'supplyQueueLength' }).catch(() => 0n),
       ])
+      const qLen = Number(queueLen as bigint)
+      const supplyMarkets: string[] = qLen > 0
+        ? (await Promise.allSettled(
+            Array.from({ length: Math.min(qLen, 10) }, (_, i) =>
+              publicClient.readContract({ address: vault, abi: VAULT_ABI, functionName: 'supplyQueue', args: [BigInt(i)] })
+            )
+          )).filter(r => r.status === 'fulfilled').map(r => (r as PromiseFulfilledResult<`0x${string}`>).value as string)
+        : []
       const asset = assetAddr as `0x${string}`
       const [assetSym, assetDec, totalAssetsRaw, exchangeRaw, supplyAPY] = await Promise.all([
         publicClient.readContract({ address: asset, abi: ERC20_ABI, functionName: 'symbol' }),
@@ -147,6 +162,8 @@ export async function getMorphoVaults(maxVaults = 50): Promise<MorphoVault[]> {
         exchangeRate:   Number(exchangeRaw as bigint) / 10 ** dec,
         supplyAPY,
         performanceFee: Number(fee as bigint) / 1e18,
+        curator:        curatorAddr as string ?? '',
+        supplyMarkets,
         protocol:       'morpho' as const,
       }
     }),

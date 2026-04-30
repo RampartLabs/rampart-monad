@@ -29,16 +29,23 @@ export const PINGU_ADDRESSES = {
 } as const
 
 const DATASTORE_ABI = [
-  { name: 'getUint',   type: 'function' as const, inputs: [{ name: 'key', type: 'bytes32' }], outputs: [{ type: 'uint256' }], stateMutability: 'view' as const },
-  { name: 'getBytes32Count', type: 'function' as const, inputs: [{ name: 'setKey', type: 'bytes32' }], outputs: [{ type: 'uint256' }], stateMutability: 'view' as const },
+  { name: 'getUint',            type: 'function' as const, inputs: [{ name: 'key', type: 'bytes32' }], outputs: [{ type: 'uint256' }], stateMutability: 'view' as const },
+  { name: 'getBytes32Count',    type: 'function' as const, inputs: [{ name: 'setKey', type: 'bytes32' }], outputs: [{ type: 'uint256' }], stateMutability: 'view' as const },
+  { name: 'getBytes32ValuesAt', type: 'function' as const, inputs: [{ name: 'setKey', type: 'bytes32' }, { name: 'start', type: 'uint256' }, { name: 'end', type: 'uint256' }], outputs: [{ type: 'bytes32[]' }], stateMutability: 'view' as const },
+  { name: 'getAddress',         type: 'function' as const, inputs: [{ name: 'key', type: 'bytes32' }], outputs: [{ type: 'address' }], stateMutability: 'view' as const },
 ] as const
 
 const POSITIONS_ABI = [
   { name: 'getPositionCount', type: 'function' as const, inputs: [], outputs: [{ type: 'uint256' }], stateMutability: 'view' as const },
 ] as const
 
+// keccak256("MARKET_LIST") — GMX-style DataStore set key for market enumeration
+const MARKET_LIST_KEY = '0x361dc8c9a3dffc3de91e3fb1b3b02e78c2af47ff07dee7b87a7a60e0e2cbfef4' as `0x${string}`
+
 export interface PinguStats {
   positionCount: number
+  marketCount:   number
+  marketKeys:    string[]   // bytes32 keys of known markets
   protocol:      'pingu'
 }
 
@@ -59,13 +66,26 @@ export interface PinguStats {
  * @category DEX
  */
 export async function getPinguStats(): Promise<PinguStats> {
-  const [positionCountRaw] = await Promise.allSettled([
+  const [positionCountRaw, marketCountRaw] = await Promise.allSettled([
     publicClient.readContract({ address: PINGU_ADDRESSES.Positions, abi: POSITIONS_ABI, functionName: 'getPositionCount' }),
+    publicClient.readContract({ address: PINGU_ADDRESSES.DataStore,  abi: DATASTORE_ABI, functionName: 'getBytes32Count', args: [MARKET_LIST_KEY] }),
   ])
 
   const positionCount = positionCountRaw.status === 'fulfilled' ? Number(positionCountRaw.value as bigint) : 0
+  const marketCount   = marketCountRaw.status   === 'fulfilled' ? Number(marketCountRaw.value   as bigint) : 0
 
-  return { positionCount, protocol: 'pingu' }
+  let marketKeys: string[] = []
+  if (marketCount > 0) {
+    const keysRaw = await publicClient.readContract({
+      address: PINGU_ADDRESSES.DataStore,
+      abi: DATASTORE_ABI,
+      functionName: 'getBytes32ValuesAt',
+      args: [MARKET_LIST_KEY, 0n, BigInt(marketCount)],
+    }).catch(() => null)
+    if (keysRaw) marketKeys = (keysRaw as string[])
+  }
+
+  return { positionCount, marketCount, marketKeys, protocol: 'pingu' }
 }
 
 /**
