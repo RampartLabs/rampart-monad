@@ -122,7 +122,8 @@ export interface MonadMarketOverview {
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
 async function buildYields(): Promise<YieldOpportunity[]> {
-  const [lsts, eulerVaults, lendingRates, morphoVaults, upshiftVaults] = await Promise.all([
+  const [monPriceObj, lsts, eulerVaults, lendingRates, morphoVaults, upshiftVaults] = await Promise.all([
+    getVerifiedPrice('MON').catch(() => ({ bestPrice: 0.031 })),
     getAllLSTStats(),
     getEulerVaults(50),
     getLendingRates(),
@@ -130,16 +131,17 @@ async function buildYields(): Promise<YieldOpportunity[]> {
     getUpshiftVaults().catch(() => []),
   ])
 
+  const monPrice = monPriceObj.bestPrice
   const yields: YieldOpportunity[] = []
 
-  // LST staking
+  // LST staking — tvl field in LSTStats is MON, convert to USD
   for (const lst of lsts) {
     yields.push({
       protocol: lst.protocol,
       type:     'stake',
       asset:    'MON',
       apy:      lst.apr,
-      tvl:      lst.tvl,
+      tvl:      lst.tvl * monPrice,
       risk:     'low',
     })
   }
@@ -390,7 +392,7 @@ export async function getMarketOverview(): Promise<MonadMarketOverview> {
  * @example
  * ```typescript
  * const yields = await getBestYields(5)
- * // → [{ protocol: 'aPriori', type: 'stake', asset: 'MON', apy: 0.096, tvl: 28600000 }, ...]
+ * // → [{ protocol: 'aPriori', type: 'stake', asset: 'MON', apy: 0.096, tvl: 745000 }, ...]
  * ```
  *
  * @category Aggregator
@@ -411,7 +413,7 @@ export async function getBestYields(limit = 10): Promise<YieldOpportunity[]> {
  * @example
  * ```typescript
  * const tvl = await getMonadDeFiTVL()
- * // → 580000000  ($580M)
+ * // → 350000000  ($350M — varies with MON price)
  * ```
  *
  * @category Aggregator

@@ -119,7 +119,7 @@ async function calcERC4626APR(vault: `0x${string}`): Promise<number> {
  * @example
  * ```typescript
  * const stats = await getAPrioriLST()
- * // → { token: 'aprMON', protocol: 'aPriori', apr: 0.094, tvl: 28600000, exchangeRate: 1.046 }
+ * // → { token: 'aprMON', protocol: 'aPriori', apr: 0.094, tvl: 28600000, exchangeRate: 1.046 }  // tvl in MON
  * ```
  *
  * @category LST
@@ -143,7 +143,7 @@ export async function getAPrioriLST(): Promise<LSTStats> {
  * @example
  * ```typescript
  * const stats = await getMagmaLST()
- * // → { token: 'gMON', protocol: 'Magma', apr: 0.100, tvl: 50200000, exchangeRate: 1.050 }
+ * // → { token: 'gMON', protocol: 'Magma', apr: 0.100, tvl: 50200000, exchangeRate: 1.050 }  // tvl in MON
  * ```
  *
  * @category LST
@@ -167,7 +167,7 @@ export async function getMagmaLST(): Promise<LSTStats> {
  * @example
  * ```typescript
  * const stats = await getFastLaneLST()
- * // → { token: 'shMON', protocol: 'FastLane', apr: 0.054, tvl: 423000000, exchangeRate: 1.542 }
+ * // → { token: 'shMON', protocol: 'FastLane', apr: 0.054, tvl: 423000000, exchangeRate: 1.542 }  // tvl in MON
  * ```
  *
  * @category LST
@@ -194,7 +194,7 @@ export async function getFastLaneLST(): Promise<LSTStats> {
  * @example
  * ```typescript
  * const stats = await getKintsuLST()
- * // → { token: 'sMON', protocol: 'Kintsu', apr: 0.089, tvl: 15000000, exchangeRate: 1.056 }
+ * // → { token: 'sMON', protocol: 'Kintsu', apr: 0.089, tvl: 15000000, exchangeRate: 1.056 }  // tvl in MON
  * ```
  *
  * @category LST
@@ -289,7 +289,7 @@ export async function getAllLSTStats(): Promise<LSTStats[]> {
  * @example
  * ```typescript
  * const best = await getBestLST()
- * // → { token: 'gMON', protocol: 'Magma', apr: 0.100, tvl: 50200000 }
+ * // → { token: 'gMON', protocol: 'Magma', apr: 0.100, tvl: 50200000 }  // tvl in MON
  * ```
  *
  * @category LST
@@ -309,7 +309,7 @@ export async function getBestLST(): Promise<LSTStats> {
  * @example
  * ```typescript
  * const comparison = await compareLSTs()
- * // → { best: { token: 'gMON', ... }, totalTVL: 516800000, reason: 'Magma (gMON) leads at 10.00% APR vs ...' }
+ * // → { best: { token: 'gMON', ... }, totalTVL: 516800000, reason: '...' }  // totalTVL in MON
  * ```
  *
  * @category LST
