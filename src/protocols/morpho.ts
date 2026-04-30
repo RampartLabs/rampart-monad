@@ -1,8 +1,8 @@
 /**
  * @module Morpho
  * @description MetaMorpho vault aggregator for Monad mainnet.
- * Vaults are hardcoded from verified on-chain data (Monad RPC limits eth_getLogs
- * to 100 blocks, making factory event scanning impractical). APY is computed
+ * Vaults are discovered via the Morpho GraphQL API (api.morpho.org/graphql)
+ * which avoids the Monad RPC 100-block eth_getLogs limit. APY is computed
  * from on-chain exchange-rate deltas.
  *
  * **TVL:** ~$30M
@@ -19,33 +19,20 @@ import { publicClient } from '../chain'
 import { MONAD_BLOCKS_PER_YEAR } from '../chain'
 
 export const MORPHO_BLUE: `0x${string}` = '0xd5d960e8c380b724a48ac59e2dff1b2cb4a1eaee'
+const MORPHO_API    = 'https://api.morpho.org/graphql'
+const MONAD_CHAIN_ID = 143
 const APR_BLOCK_DELTA = 72_000n
 
-// Verified MetaMorpho vaults on Monad Mainnet (Monad RPC limits eth_getLogs to 100 blocks)
-const KNOWN_VAULTS: `0x${string}`[] = [
-  '0x78999cc96d2Ba0341588C60CcB0E91c6C33CF371', // Hyperithm USDC Apex (hyperUSDCa)
-  '0xe09A93786275546690247d70f1767cF0b69e8Ea0', // Hyperithm cbBTC Apex (hypercbBTCa)
-  '0xbeEFf443C3CbA3E369DA795002243BeaC311aB83', // Steakhouse High Yield USDC (bbqUSDC)
-  '0xbeeff96D65Cb80a0029dc9D3C4d7306c3C3A6253', // Steakhouse High Yield ETH (bbqETH)
-  '0xbeeff300E9A9caeC7beEA740ab8758D33b777509', // Steakhouse High Yield USDT0 (bbqUSDT0)
-  '0xBeEFfB65df79Baac701307c9605b7aB207355Fdb', // Steakhouse High Yield USD1 (bbqUSD1)
-  '0xbeeffeA75cFC4128ebe10C8D7aE22016D215060D', // Steakhouse High Yield AUSD (bbqAUSD)
-  '0xbeeff421948cDE29644a63FBA4ef5e5a621075d0', // Steakhouse High Yield cbBTC (bbqCBBTC)
-  '0x0ED3615ff949C8A34D15441970900E849A3409FC', // Unified Labs RWA Vault (urRWA)
-  '0xEceF08A3cD83054e8FF6D8Cb9cE41a36b81E8d7E', // UltraYield cbBTC (UYCBBTC)
-  '0x80017bF0f793EBbE9679Cd61ff0e395B62CAbB59', // August Digital USDC (AugustUSDCv2)
-]
-
 const VAULT_ABI = [
-  { name: 'asset',           type: 'function' as const, inputs: [], outputs: [{ type: 'address' }], stateMutability: 'view' as const },
-  { name: 'name',            type: 'function' as const, inputs: [], outputs: [{ type: 'string'  }], stateMutability: 'view' as const },
-  { name: 'symbol',          type: 'function' as const, inputs: [], outputs: [{ type: 'string'  }], stateMutability: 'view' as const },
-  { name: 'totalAssets',     type: 'function' as const, inputs: [], outputs: [{ type: 'uint256' }], stateMutability: 'view' as const },
-  { name: 'convertToAssets', type: 'function' as const, inputs: [{ type: 'uint256', name: 'shares' }], outputs: [{ type: 'uint256' }], stateMutability: 'view' as const },
-  { name: 'fee',             type: 'function' as const, inputs: [], outputs: [{ type: 'uint96'  }], stateMutability: 'view' as const },
+  { name: 'asset',             type: 'function' as const, inputs: [], outputs: [{ type: 'address' }], stateMutability: 'view' as const },
+  { name: 'name',              type: 'function' as const, inputs: [], outputs: [{ type: 'string'  }], stateMutability: 'view' as const },
+  { name: 'symbol',            type: 'function' as const, inputs: [], outputs: [{ type: 'string'  }], stateMutability: 'view' as const },
+  { name: 'totalAssets',       type: 'function' as const, inputs: [], outputs: [{ type: 'uint256' }], stateMutability: 'view' as const },
+  { name: 'convertToAssets',   type: 'function' as const, inputs: [{ type: 'uint256', name: 'shares' }], outputs: [{ type: 'uint256' }], stateMutability: 'view' as const },
+  { name: 'fee',               type: 'function' as const, inputs: [], outputs: [{ type: 'uint96'  }], stateMutability: 'view' as const },
   { name: 'supplyQueueLength', type: 'function' as const, inputs: [], outputs: [{ type: 'uint256' }], stateMutability: 'view' as const },
-  { name: 'supplyQueue',     type: 'function' as const, inputs: [{ type: 'uint256', name: 'index' }], outputs: [{ type: 'bytes32' }], stateMutability: 'view' as const },
-  { name: 'curator',         type: 'function' as const, inputs: [], outputs: [{ type: 'address' }], stateMutability: 'view' as const },
+  { name: 'supplyQueue',       type: 'function' as const, inputs: [{ type: 'uint256', name: 'index' }], outputs: [{ type: 'bytes32' }], stateMutability: 'view' as const },
+  { name: 'curator',           type: 'function' as const, inputs: [], outputs: [{ type: 'address' }], stateMutability: 'view' as const },
 ] as const
 
 const ERC20_ABI = [
@@ -63,13 +50,32 @@ export interface MorphoVault {
   exchangeRate:   number
   supplyAPY:      number
   performanceFee: number
-  curator:        string        // address managing allocation strategy
-  supplyMarkets:  string[]      // bytes32 market IDs this vault allocates to
+  curator:        string
+  supplyMarkets:  string[]
   protocol:       'morpho'
 }
 
-function discoverVaults(maxVaults: number): `0x${string}`[] {
-  return KNOWN_VAULTS.slice(0, maxVaults)
+async function discoverVaults(maxVaults: number, listedOnly: boolean): Promise<`0x${string}`[]> {
+  const query = `{
+    vaultV2s(first: ${maxVaults}, where: { chainId_in: [${MONAD_CHAIN_ID}] }) {
+      items { address listed }
+    }
+  }`
+  try {
+    const res = await fetch(MORPHO_API, {
+      method:  'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body:    JSON.stringify({ query }),
+    })
+    if (!res.ok) return []
+    const { data } = await res.json() as { data?: { vaultV2s?: { items?: { address: string; listed: boolean }[] } } }
+    const items = data?.vaultV2s?.items ?? []
+    return items
+      .filter(v => !listedOnly || v.listed)
+      .map(v => v.address as `0x${string}`)
+  } catch {
+    return []
+  }
 }
 
 async function calcVaultAPY(vault: `0x${string}`): Promise<number> {
@@ -91,22 +97,23 @@ async function calcVaultAPY(vault: `0x${string}`): Promise<number> {
 }
 
 /**
- * Discovers and returns all active MetaMorpho vaults deployed on Monad, sorted by total assets.
- * Vault addresses are resolved from CreateMetaMorpho factory events starting at block 1.
+ * Discovers and returns all active MetaMorpho vaults on Monad via the Morpho GraphQL API,
+ * then enriches each with on-chain data (APY, TVL, exchange rate, curator, supply markets).
  *
- * @param maxVaults - Maximum number of vaults to inspect (default 50)
- * @returns Array of MorphoVault sorted by totalAssets descending; empty vaults are excluded
+ * @param maxVaults  - Maximum number of vaults to inspect (default 50)
+ * @param listedOnly - Only return vaults marked as listed in the Morpho registry (default true)
+ * @returns Array of {@link MorphoVault} sorted descending by `totalAssets`; zero-TVL vaults excluded
  *
  * @example
  * ```typescript
- * const vaults = await getMorphoVaults(10)
- * // → [{ name: 'Gauntlet USDC', assetSymbol: 'USDC', totalAssets: 2500000, supplyAPY: 0.08 }]
+ * const vaults = await getMorphoVaults()
+ * // → [{ name: 'Hyperithm USDC Apex', assetSymbol: 'USDC', totalAssets: 15200000, supplyAPY: 0.04 }]
  * ```
  *
  * @category Lending
  */
-export async function getMorphoVaults(maxVaults = 50): Promise<MorphoVault[]> {
-  const addresses = discoverVaults(maxVaults)
+export async function getMorphoVaults(maxVaults = 50, listedOnly = true): Promise<MorphoVault[]> {
+  const addresses = await discoverVaults(maxVaults, listedOnly)
   if (addresses.length === 0) return []
 
   const results = await Promise.allSettled(
@@ -135,9 +142,9 @@ export async function getMorphoVaults(maxVaults = 50): Promise<MorphoVault[]> {
         publicClient.readContract({ address: vault, abi: VAULT_ABI, functionName: 'convertToAssets', args: [1_000_000_000_000_000_000n] }),
         calcVaultAPY(vault),
       ])
-      const dec      = Number(assetDec)
-      const divisor  = 10n ** BigInt(dec)
-      const ta       = Number((totalAssetsRaw as bigint) / divisor)
+      const dec     = Number(assetDec)
+      const divisor = 10n ** BigInt(dec)
+      const ta      = Number((totalAssetsRaw as bigint) / divisor)
       if (ta === 0) return null
       return {
         address:        vault,
@@ -164,14 +171,13 @@ export async function getMorphoVaults(maxVaults = 50): Promise<MorphoVault[]> {
 
 /**
  * Returns total USD value locked across all Morpho stablecoin vaults on Monad.
- * Only counts vaults with USDC, USDT, AUSD, or USDT0 as the underlying asset.
  *
- * @returns Total TVL in USD across all stablecoin MetaMorpho vaults
+ * @returns Total TVL in USD across stablecoin MetaMorpho vaults
  *
  * @example
  * ```typescript
  * const tvl = await getMorphoTVL()
- * // → 4800000
+ * // → 30600000
  * ```
  *
  * @category Lending
@@ -191,7 +197,7 @@ export async function getMorphoTVL(): Promise<number> {
  * @example
  * ```typescript
  * const best = await getBestMorphoVault()
- * // → { name: 'Gauntlet USDC', supplyAPY: 0.12, totalAssets: 2500000, assetSymbol: 'USDC' }
+ * // → { name: 'AugustUSDCv2', supplyAPY: 0.058, totalAssets: 5700000, assetSymbol: 'USDC' }
  * ```
  *
  * @category Lending

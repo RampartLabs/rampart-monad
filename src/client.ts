@@ -166,5 +166,5 @@ export class Rampart {
   getNadFunTokens(limit?: number):      Promise<import('./protocols/nadfun').MemeToken[]>   { return getNadFunTokens(limit) }
   getTrendingMemes(limit?: number):     Promise<import('./protocols/nadfun').MemeToken[]>   { return getTrendingMemes(limit) }
   getPerpVaultStats():                  Promise<import('./protocols/perps').PerpVaultStats[]> { return getPerpVaultStats() }
-  getFundingRates():                    Promise<{ protocol: string; asset: string; rate: number; apr: number }[]> { return getFundingRates() }
+  getFundingRates():                    Promise<{ protocol: string; asset: string; rate: number; fundingInterval: number }[]> { return getFundingRates() }
 }

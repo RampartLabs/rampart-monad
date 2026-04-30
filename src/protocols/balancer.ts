@@ -1,11 +1,13 @@
 /**
  * @module Balancer
- * @description Balancer V3 weighted and stable AMM pools on Monad Mainnet.
- * Pools are discovered on-chain via factory `PoolCreated` events; TVL is priced
- * using stablecoin balances and the verified MON/USD rate from the oracle module.
+ * @description Balancer V3 AMM pools on Monad Mainnet.
+ * Pools and TVL are fetched from the Balancer REST API (api-v3.balancer.fi),
+ * which avoids the Monad RPC 100-block eth_getLogs limit and the Vault V3
+ * VaultExtension proxy complexity. On-chain reads (swap fee, weights) are
+ * layered on top for pools that need extra metadata.
  *
- * **TVL:** ~$500K
- * **Type:** Weighted / Stable AMM (Balancer V3)
+ * **TVL:** ~$10.5M
+ * **Type:** Weighted / Stable / Surge AMM (Balancer V3)
  * **Docs:** https://docs.balancer.fi
  *
  * Available functions:
@@ -14,35 +16,16 @@
  */
 
 import { publicClient } from '../chain'
-import { getVerifiedPrice } from './oracles'
 
-const BALANCER_VAULT:           `0x${string}` = '0xbA1333333333a1BA1108E8412f11850A5C319bA9'
-const WEIGHTED_POOL_FACTORY:    `0x${string}` = '0x4bdCc2fb18AEb9e2d281b0278D946445070EAda7'
-const STABLE_POOL_FACTORY:      `0x${string}` = '0xf5CDdF6feD9C589f1Be04899F48f9738531daD59'
+const BALANCER_API   = 'https://api-v3.balancer.fi/'
+const MONAD_CHAIN    = 'MONAD'
 
-const STABLE_SYMBOLS = new Set(['USDC', 'USDT', 'USDT0', 'AUSD', 'DAI'])
-const WMON_SYMBOLS   = new Set(['WMON', 'MON'])
+const WEIGHTED_FACTORY = '0x4bdCc2fb18AEb9e2d281b0278D946445070EAda7' as `0x${string}`
+const STABLE_FACTORY   = '0xf5CDdF6feD9C589f1Be04899F48f9738531daD59' as `0x${string}`
 
-const VAULT_ABI = [
-  { name: 'getPoolTokens', type: 'function' as const,
-    inputs:  [{ name: 'pool', type: 'address' }],
-    outputs: [{ name: 'tokens', type: 'address[]' }, { name: 'balancesRaw', type: 'uint256[]' }, { name: 'lastLiveBalances', type: 'uint256[]' }],
-    stateMutability: 'view' as const },
-] as const
-
-const POOL_CREATED_EVENT = [{
-  name: 'PoolCreated',
-  type: 'event' as const,
-  inputs: [{ name: 'pool', type: 'address', indexed: true }],
-}] as const
-
-const ERC20_ABI = [
-  { name: 'symbol',   type: 'function' as const, inputs: [], outputs: [{ type: 'string' }], stateMutability: 'view' as const },
-  { name: 'decimals', type: 'function' as const, inputs: [], outputs: [{ type: 'uint8'  }], stateMutability: 'view' as const },
-] as const
-
+// BasePoolFactory ABI — for supplementary on-chain reads
 const POOL_ABI = [
-  { name: 'getSwapFeePercentage', type: 'function' as const, inputs: [], outputs: [{ type: 'uint256' }],   stateMutability: 'view' as const },
+  { name: 'getSwapFeePercentage', type: 'function' as const, inputs: [], outputs: [{ type: 'uint256'   }], stateMutability: 'view' as const },
   { name: 'getNormalizedWeights', type: 'function' as const, inputs: [], outputs: [{ type: 'uint256[]' }], stateMutability: 'view' as const },
 ] as const
 
@@ -51,126 +34,123 @@ export interface BalancerPool {
   type:      'weighted' | 'stable' | 'unknown'
   tokens:    string[]
   balances:  number[]
-  swapFee:   number     // e.g. 0.003 = 0.3%
-  weights:   number[]   // normalized weights 0..1, empty for stable pools
+  swapFee:   number
+  weights:   number[]
   tvlUSD:    number
   protocol:  'balancer'
 }
 
-async function discoverPools(): Promise<{ address: `0x${string}`; type: 'weighted' | 'stable' }[]> {
-  const blockNow = await publicClient.getBlockNumber().catch(() => 0n)
-  if (blockNow === 0n) return []
-  const fromBlock = blockNow > 5_000_000n ? blockNow - 5_000_000n : 1n
+interface ApiPool {
+  address:     string
+  name:        string
+  type:        string
+  dynamicData: { swapFee?: string; totalLiquidity?: string }
+  poolTokens:  { address: string; symbol: string; decimals: number; balance: string }[]
+}
 
-  const discovered: { address: `0x${string}`; type: 'weighted' | 'stable' }[] = []
-  for (const [factory, type] of [
-    [WEIGHTED_POOL_FACTORY, 'weighted' as const],
-    [STABLE_POOL_FACTORY,   'stable'   as const],
-  ] as const) {
-    try {
-      const logs = await publicClient.getLogs({
-        address:   factory,
-        event:     POOL_CREATED_EVENT[0],
-        fromBlock,
-        toBlock:   blockNow,
-      })
-      logs.forEach(l => {
-        const pool = (l.args as Record<string, unknown>).pool as `0x${string}` | undefined
-        if (pool) discovered.push({ address: pool, type })
-      })
-    } catch { }
+function normalizeType(apiType: string): 'weighted' | 'stable' | 'unknown' {
+  const t = apiType?.toLowerCase() ?? ''
+  if (t.includes('weighted')) return 'weighted'
+  if (t.includes('stable') || t.includes('surge'))  return 'stable'
+  return 'unknown'
+}
+
+async function fetchPoolsFromApi(maxPools: number): Promise<ApiPool[]> {
+  const query = `{
+    poolGetPools(first: ${maxPools}, where: { chainIn: [${MONAD_CHAIN}] }) {
+      address
+      name
+      type
+      dynamicData { swapFee totalLiquidity }
+      poolTokens   { address symbol decimals balance }
+    }
+  }`
+  try {
+    const res = await fetch(BALANCER_API, {
+      method:  'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body:    JSON.stringify({ query }),
+    })
+    if (!res.ok) return []
+    const { data } = await res.json() as { data?: { poolGetPools?: ApiPool[] } }
+    return data?.poolGetPools ?? []
+  } catch {
+    return []
   }
-  return discovered
 }
 
 /**
- * Discovers and returns all Balancer V3 weighted and stable pools on Monad, sorted by TVL.
+ * Discovers and returns all Balancer V3 pools on Monad, sorted by TVL.
  *
- * Queries both the weighted and stable pool factories for `PoolCreated` events, then
- * fetches token metadata and balances from the Balancer Vault via multicall. TVL is
- * computed from stablecoin balances plus WMON/MON balances priced at the verified rate.
+ * Data is sourced from the Balancer REST API, which indexes all factories and
+ * pool types (Weighted, Stable, Surge/StableSurge, reCLAMM, Boosted) and
+ * provides USD-denominated TVL directly — no on-chain getLogs or Vault calls needed.
  *
- * @returns Array of {@link BalancerPool} objects sorted descending by `tvlUSD`
+ * @param maxPools - Maximum number of pools to return (default 100)
+ * @returns Array of {@link BalancerPool} sorted descending by `tvlUSD`
  *
  * @example
  * ```typescript
  * const pools = await getBalancerPools()
- * // → [{ address: '0x...', type: 'weighted', tokens: ['WMON', 'USDC'], tvlUSD: 120000, ... }]
+ * // → [{ type: 'stable', tokens: ['wnAUSD', 'wnUSDC', 'wnUSDT0'], tvlUSD: 8317224 }]
  * ```
  *
  * @category DEX
  */
-export async function getBalancerPools(): Promise<BalancerPool[]> {
-  const pools  = await discoverPools()
-  if (pools.length === 0) return []
-
-  const monPriceRaw = await getVerifiedPrice('MON').catch(() => null)
-  const monPrice = monPriceRaw?.bestPrice ?? null
+export async function getBalancerPools(maxPools = 100): Promise<BalancerPool[]> {
+  const apiPools = await fetchPoolsFromApi(maxPools)
+  if (apiPools.length === 0) return []
 
   const results = await Promise.allSettled(
-    pools.map(async ({ address, type }) => {
-      const poolResult = await publicClient.readContract({
-        address: BALANCER_VAULT, abi: VAULT_ABI, functionName: 'getPoolTokens', args: [address],
-      }).catch(() => null)
-      if (!poolResult) return null
+    apiPools.map(async (p) => {
+      const tokens   = p.poolTokens.map(t => t.symbol)
+      const balances = p.poolTokens.map(t => parseFloat(t.balance ?? '0'))
+      const tvlUSD   = parseFloat(p.dynamicData?.totalLiquidity ?? '0')
+      const type     = normalizeType(p.type)
 
-      const [tokens, balancesRaw] = poolResult as unknown as [`0x${string}`[], bigint[], bigint[]]
-      if (!tokens || tokens.length === 0) return null
-
-      const tokenMeta = await publicClient.multicall({
-        contracts: tokens.flatMap(t => ([
-          { address: t, abi: ERC20_ABI, functionName: 'symbol'   as const },
-          { address: t, abi: ERC20_ABI, functionName: 'decimals' as const },
-        ])),
-        allowFailure: true,
-      })
-
-      const symbols:   string[] = []
-      const decimals:  number[] = []
-      for (let i = 0; i < tokens.length; i++) {
-        symbols.push(tokenMeta[i * 2].status === 'success'     ? (tokenMeta[i * 2].result as string) : 'UNKNOWN')
-        decimals.push(tokenMeta[i * 2 + 1].status === 'success' ? Number(tokenMeta[i * 2 + 1].result as number) : 18)
-      }
-
-      const balances = (balancesRaw as bigint[]).map((b, i) => Number(b) / 10 ** decimals[i])
-
-      let tvlUSD = 0
-      for (let i = 0; i < symbols.length; i++) {
-        if (STABLE_SYMBOLS.has(symbols[i])) tvlUSD += balances[i]
-        else if (WMON_SYMBOLS.has(symbols[i]) && monPrice !== null) tvlUSD += balances[i] * monPrice
-      }
+      const swapFeeApi = parseFloat(p.dynamicData?.swapFee ?? '0')
 
       const [swapFeeRaw, weightsRaw] = await Promise.all([
-        publicClient.readContract({ address, abi: POOL_ABI, functionName: 'getSwapFeePercentage' }).catch(() => null),
-        publicClient.readContract({ address, abi: POOL_ABI, functionName: 'getNormalizedWeights'  }).catch(() => null),
+        swapFeeApi === 0
+          ? publicClient.readContract({ address: p.address as `0x${string}`, abi: POOL_ABI, functionName: 'getSwapFeePercentage' }).catch(() => null)
+          : Promise.resolve(null),
+        type === 'weighted'
+          ? publicClient.readContract({ address: p.address as `0x${string}`, abi: POOL_ABI, functionName: 'getNormalizedWeights' }).catch(() => null)
+          : Promise.resolve(null),
       ])
 
+      const swapFee = swapFeeRaw !== null
+        ? Number(swapFeeRaw as bigint) / 1e18
+        : swapFeeApi
+
       return {
-        address, type, tokens: symbols, balances, tvlUSD,
-        swapFee: swapFeeRaw !== null ? Number(swapFeeRaw as bigint) / 1e18 : 0,
-        weights: weightsRaw !== null ? (weightsRaw as bigint[]).map(w => Number(w) / 1e18) : [],
+        address:  p.address,
+        type,
+        tokens,
+        balances,
+        swapFee,
+        weights:  weightsRaw !== null ? (weightsRaw as bigint[]).map(w => Number(w) / 1e18) : [],
+        tvlUSD,
         protocol: 'balancer' as const,
       }
-    }),
+    })
   )
 
   return results
-    .filter(r => r.status === 'fulfilled' && r.value !== null)
+    .filter(r => r.status === 'fulfilled')
     .map(r => (r as PromiseFulfilledResult<BalancerPool>).value)
     .sort((a, b) => b.tvlUSD - a.tvlUSD)
 }
 
 /**
- * Returns total USD value locked across all Balancer pools on Monad.
- *
- * Aggregates `tvlUSD` from every pool returned by {@link getBalancerPools}.
+ * Returns total USD value locked across all Balancer V3 pools on Monad.
  *
  * @returns Total TVL in USD as a plain number
  *
  * @example
  * ```typescript
  * const tvl = await getBalancerTVL()
- * // → 487500
+ * // → 10499095
  * ```
  *
  * @category DEX
@@ -179,3 +159,5 @@ export async function getBalancerTVL(): Promise<number> {
   const pools = await getBalancerPools()
   return pools.reduce((s, p) => s + p.tvlUSD, 0)
 }
+
+export { WEIGHTED_FACTORY, STABLE_FACTORY }
