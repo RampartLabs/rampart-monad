@@ -77,6 +77,8 @@ describe('Balancer V3 (Phase 16)', () => {
   it('getBalancerTVL equals sum of pool tvlUSD', async () => {
     const [tvl, pools] = await Promise.all([getBalancerTVL(), getBalancerPools()])
     const sum = pools.reduce((s, p) => s + p.tvlUSD, 0)
-    expect(tvl).toBeCloseTo(sum, 0)
+    // two independent API calls — allow 1% drift from concurrent fetches
+    const pct = Math.abs(tvl - sum) / (sum || 1)
+    expect(pct).toBeLessThan(0.01)
   }, 60_000)
 })

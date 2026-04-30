@@ -187,6 +187,10 @@ export type { DopplerStats } from './protocols/doppler'
 export { getMuDigitalStats, getMuDigitalTVL, MU_DIGITAL_ADDRESSES } from './protocols/mudigital'
 export type { MuDigitalStats } from './protocols/mudigital'
 
+// Phase 54 — UltraYield by Edge (ERC-4626 vaults on Gearbox V3)
+export { getUltraYieldVaults, getUltraYieldTVL, ULTRAYIELD_ADDRESSES } from './protocols/ultrayield'
+export type { UltraYieldVault } from './protocols/ultrayield'
+
 // Layer 2: Class
 export { Rampart } from './client'
 

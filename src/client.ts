@@ -19,6 +19,7 @@ import { getNadFunTokens, getTrendingMemes } from './protocols/nadfun'
 import { getPerpVaultStats, getFundingRates, getPerplMarkets, getMondayMarkets, getPerplTVL, getTotalPerpTVL } from './protocols/perps'
 import { getBalancerPools, getBalancerTVL } from './protocols/balancer'
 import { getMuDigitalStats, getMuDigitalTVL } from './protocols/mudigital'
+import { getUltraYieldVaults, getUltraYieldTVL } from './protocols/ultrayield'
 import type {
   TokenPrice, StakingAPR, LendingRate, Pool, Orderbook,
   SwapSimulation, PriceComparison, YieldComparison, YieldStrategy,
@@ -181,4 +182,8 @@ export class Rampart {
   // ── Mu Digital (RWA) ─────────────────────────────────────
   getMuDigitalStats(): Promise<import('./protocols/mudigital').MuDigitalStats> { return getMuDigitalStats() }
   getMuDigitalTVL():   Promise<number>                                          { return getMuDigitalTVL() }
+
+  // ── UltraYield by Edge ───────────────────────────────────────
+  getUltraYieldVaults(): Promise<import('./protocols/ultrayield').UltraYieldVault[]> { return getUltraYieldVaults() }
+  getUltraYieldTVL():    Promise<number>                                              { return getUltraYieldTVL() }
 }

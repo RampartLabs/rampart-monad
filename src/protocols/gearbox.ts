@@ -4,7 +4,7 @@
  * Credit pools are queried via a curated address list; APY is derived from
  * `baseInterestRate` (ray-per-second) scaled to annualised figures.
  *
- * **TVL:** ~$1M
+ * **TVL:** ~$24M (USDC + AUSD + USDT0 pools, includes UltraYield by Edge vaults)
  * **Type:** Leveraged Lending (Gearbox V3)
  * **Docs:** https://docs.gearbox.finance
  *
@@ -20,6 +20,8 @@ const RAY = 1e27
 
 const KNOWN_POOLS: { address: `0x${string}`; name: string }[] = [
   { address: '0x6b343f7b797f1488aa48c49d540690f2b2c89751', name: 'USDC Lending Pool' },
+  { address: '0xc4173359087ce643235420b7bc610d9b0cf2b82d', name: 'AUSD Lending Pool' },
+  { address: '0x164a35f31e4e0f6c45d500962a6978d2cbd5a16b', name: 'USDT0 Lending Pool' },
 ]
 
 const POOL_ABI = [
@@ -133,7 +135,7 @@ export async function getGearboxPools(): Promise<GearboxPool[]> {
  * @example
  * ```typescript
  * const tvl = await getGearboxTVL()
- * // → 1020000
+ * // → 24000000
  * ```
  *
  * @category Lending

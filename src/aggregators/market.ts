@@ -47,6 +47,7 @@ import { getBalancerTVL }       from '../protocols/balancer'
 import { getKuruPools as _getKuruPoolsDex } from '../protocols/kuru'
 import { getCurvePools }        from '../protocols/curve'
 import { getMuDigitalTVL }      from '../protocols/mudigital'
+import { getGearboxTVL }       from '../protocols/gearbox'
 
 // ─── Public types ─────────────────────────────────────────────────────────────
 
@@ -204,7 +205,7 @@ async function buildYields(): Promise<YieldOpportunity[]> {
 async function buildTVL(monPrice: number): Promise<TVLBreakdown> {
   const [lsts, euler, lending, curvanceTVL, renzoStats, multipliTVL, beefyTVL, upshiftVaults, morphoTVL,
          sherpaTVL, accountableTVL, folksTVL, sumerTVL, lagoonTVL, enjoyoorsTVL, nablaTVL, townSquareTVL,
-         balancerTVL, kuruPools, curvePools, muDigitalTVL] =
+         balancerTVL, kuruPools, curvePools, muDigitalTVL, gearboxTVL] =
     await Promise.all([
       getAllLSTStats(),
       getEulerVaults(108),
@@ -227,6 +228,7 @@ async function buildTVL(monPrice: number): Promise<TVLBreakdown> {
       _getKuruPoolsDex().catch(() => []),
       getCurvePools().catch(() => []),
       getMuDigitalTVL().catch(() => 0),
+      getGearboxTVL().catch(() => 0),
     ])
 
   const liquidStaking  = lsts.reduce((s, l) => s + l.tvl * monPrice, 0)
@@ -238,7 +240,7 @@ async function buildTVL(monPrice: number): Promise<TVLBreakdown> {
     .filter(r => ['USDC', 'AUSD', 'USDT0'].includes(r.asset))
     .reduce((s, r) => s + r.totalSupply, 0)
   const lendingTVL = eulerUSD + lendUSD + curvanceTVL + morphoTVL
-    + sherpaTVL + accountableTVL + folksTVL + sumerTVL + lagoonTVL + townSquareTVL
+    + sherpaTVL + accountableTVL + folksTVL + sumerTVL + lagoonTVL + townSquareTVL + gearboxTVL
 
   const upshiftTVL = upshiftVaults.reduce((s, v) => s + v.totalAssets, 0)
   const yieldOptimizer = beefyTVL + upshiftTVL + enjoyoorsTVL + nablaTVL
