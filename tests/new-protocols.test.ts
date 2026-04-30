@@ -177,8 +177,10 @@ describe('Covenant Protocol (Phase 33)', () => {
 // ─── Multipli.fi ─────────────────────────────────────────────────────────────
 
 describe('Multipli.fi RWA Vaults (Phase 34)', () => {
-  it('MULTIPLI_ADDRESSES has correct address', () => {
-    expect(MULTIPLI_ADDRESSES.xRWAUSDI).toBe('0x754704Bc059F8C67012fEd69BC8A327a5aafb603')
+  it('MULTIPLI_ADDRESSES — address pending mainnet verification', () => {
+    // xRWAUSDI mainnet address not yet in official registry — empty until confirmed
+    // 0x754704... was verified to be USDC, not Multipli
+    expect(typeof MULTIPLI_ADDRESSES.xRWAUSDI).toBe('string')
   })
 
   it('getMultipliVault returns valid vault stats', async () => {

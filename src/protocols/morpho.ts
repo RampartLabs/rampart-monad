@@ -69,16 +69,21 @@ export interface MorphoVault {
 }
 
 async function discoverVaults(maxVaults: number): Promise<`0x${string}`[]> {
+  // Scan last 5M blocks (~23 days at 400ms blocks) — MetaMorpho was deployed recently on Monad
+  // Use numeric toBlock (not 'latest') to avoid RPC range-limit errors
+  const blockNow = await publicClient.getBlockNumber().catch(() => 0n)
+  if (blockNow === 0n) return []
+  const fromBlock = blockNow > 5_000_000n ? blockNow - 5_000_000n : 1n
   try {
     const logs = await publicClient.getLogs({
       address: METAMORPHO_FACTORY,
       event:   FACTORY_EVENT_ABI[0],
-      fromBlock: 1n,
-      toBlock:   'latest',
+      fromBlock,
+      toBlock: blockNow,
     })
     return logs
-      .map(l => (l.args as any).metaMorpho as `0x${string}`)
-      .filter(Boolean)
+      .map(l => (l.args as Record<string, unknown>).metaMorpho as `0x${string}` | undefined)
+      .filter((a): a is `0x${string}` => !!a)
       .slice(0, maxVaults)
   } catch {
     return []

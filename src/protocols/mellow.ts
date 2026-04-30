@@ -154,7 +154,9 @@ export async function getMellowAPY(): Promise<number> {
   const blockNow = await publicClient.getBlockNumber().catch(() => 0n)
   if (blockNow === 0n) return 0
 
-  const DELTA = 7_200n  // ~1 hour at 500ms blocks
+  // 24h window (172_800 blocks at 500ms) — vshMON accrues shMON yield slowly,
+  // 1h window gives 0 on low-activity periods; 24h captures meaningful rate growth
+  const DELTA = 172_800n
 
   const [rateNow, ratePast] = await Promise.allSettled([
     publicClient.readContract({ address: MELLOW_ADDRESSES.Fastlane_Vault, abi: ERC4626_ABI, functionName: 'convertToAssets', args: [BigInt(1e18)] }),
@@ -165,10 +167,10 @@ export async function getMellowAPY(): Promise<number> {
 
   const r0  = Number(rateNow.value as bigint)  / 1e18
   const r1  = Number(ratePast.value as bigint) / 1e18
-  if (r1 === 0) return 0
+  if (r1 === 0 || r0 <= r1) return 0
 
-  const growthPerHour     = (r0 - r1) / r1
-  const annualizedGrowth  = growthPerHour * 24 * 365
+  const growthPerDay      = (r0 - r1) / r1
+  const annualizedGrowth  = growthPerDay * 365
   return Math.max(0, annualizedGrowth)
 }
 

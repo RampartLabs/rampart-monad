@@ -58,6 +58,10 @@ export interface BalancerPool {
 }
 
 async function discoverPools(): Promise<{ address: `0x${string}`; type: 'weighted' | 'stable' }[]> {
+  const blockNow = await publicClient.getBlockNumber().catch(() => 0n)
+  if (blockNow === 0n) return []
+  const fromBlock = blockNow > 5_000_000n ? blockNow - 5_000_000n : 1n
+
   const discovered: { address: `0x${string}`; type: 'weighted' | 'stable' }[] = []
   for (const [factory, type] of [
     [WEIGHTED_POOL_FACTORY, 'weighted' as const],
@@ -67,11 +71,11 @@ async function discoverPools(): Promise<{ address: `0x${string}`; type: 'weighte
       const logs = await publicClient.getLogs({
         address:   factory,
         event:     POOL_CREATED_EVENT[0],
-        fromBlock: 1n,
-        toBlock:   'latest',
+        fromBlock,
+        toBlock:   blockNow,
       })
       logs.forEach(l => {
-        const pool = (l.args as any).pool as `0x${string}`
+        const pool = (l.args as Record<string, unknown>).pool as `0x${string}` | undefined
         if (pool) discovered.push({ address: pool, type })
       })
     } catch { }

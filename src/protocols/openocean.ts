@@ -83,7 +83,9 @@ export async function getOpenOceanQuote(
     return { tokenIn, tokenOut, amountIn, amountOut: 0, price: 0, gasEstimate: 0, protocol: 'openocean' }
   }
 
-  const amountInRaw = Math.floor(amountIn * 10 ** inDecimals).toString()
+  // OpenOcean API takes amount in human-readable units (e.g. 100 for 100 USDC),
+  // not in raw token units — it handles the decimal conversion internally
+  const amountInRaw = amountIn.toString()
 
   try {
     const url = `${OPENOCEAN_API}/quote?inTokenAddress=${inAddr}&outTokenAddress=${outAddr}&amount=${amountInRaw}&gasPrice=50`
