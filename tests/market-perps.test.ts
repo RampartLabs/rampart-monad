@@ -1,6 +1,9 @@
 import { describe, it, expect } from 'vitest'
 import { getNadFunTokens, getTrendingMemes, getGraduatedMemes } from '../src/protocols/nadfun'
-import { getMondayMarkets, getPerpVaultStats, getFundingRates, getTotalPerpTVL } from '../src/protocols/perps'
+import {
+  getMondayMarkets, getPerplMarkets, getPerpVaultStats,
+  getFundingRates, getPerplTVL, getTotalPerpTVL,
+} from '../src/protocols/perps'
 
 describe('nad.fun Memecoins (Phase 15a)', () => {
   it('getNadFunTokens returns array (may be empty if factory not confirmed)', async () => {
@@ -30,30 +33,100 @@ describe('nad.fun Memecoins (Phase 15a)', () => {
   }, 30_000)
 })
 
-describe('Perpetuals (Phase 15b)', () => {
-  it('getMondayMarkets returns array (may be empty if contracts not confirmed)', async () => {
+describe('Perpl Exchange (Phase 15b)', () => {
+  it('getMondayMarkets returns empty array (SynFutures ABI unverified)', async () => {
     const markets = await getMondayMarkets()
     expect(Array.isArray(markets)).toBe(true)
-    if (markets.length > 0) {
-      console.log('  Monday Markets:')
-      markets.forEach(m =>
-        console.log(`    ${m.asset.slice(0,10)} longOI=$${m.longOI.toFixed(0)} shortOI=$${m.shortOI.toFixed(0)} sentiment=${m.sentiment}`)
-      )
-    } else {
-      console.log('  Monday Markets: contracts not yet confirmed (placeholder addresses)')
-    }
+    console.log(`  Monday Markets: ${markets.length} (expected 0 — SynFutures contracts unverified)`)
   }, 30_000)
 
-  it('getPerpVaultStats returns array (placeholder fallback)', async () => {
+  it('getPerplMarkets returns active markets with all fields', async () => {
+    const markets = await getPerplMarkets()
+    expect(Array.isArray(markets)).toBe(true)
+    expect(markets.length).toBeGreaterThan(0)
+
+    for (const m of markets) {
+      expect(m.protocol).toBe('perpl')
+      expect(m.perpId).toBeGreaterThan(0)
+      expect(m.asset.length).toBeGreaterThan(0)
+      expect(m.markPrice).toBeGreaterThanOrEqual(0)
+      expect(m.oraclePrice).toBeGreaterThanOrEqual(0)
+      expect(m.longOI).toBeGreaterThanOrEqual(0)
+      expect(m.shortOI).toBeGreaterThanOrEqual(0)
+      expect(m.totalOI).toBeCloseTo(m.longOI + m.shortOI, 6)
+      expect(typeof m.fundingRatePct).toBe('number')
+      expect(m.fundingInterval).toBeGreaterThan(0)
+      expect(m.tvlUSD).toBeGreaterThanOrEqual(0)
+      expect(m.maxBid).toBeGreaterThanOrEqual(0)
+      expect(m.minBid).toBeGreaterThanOrEqual(0)
+      expect(['bullish', 'bearish', 'neutral']).toContain(m.sentiment)
+    }
+
+    const sorted = [...markets]
+    for (let i = 1; i < sorted.length; i++) {
+      expect(sorted[i].tvlUSD).toBeLessThanOrEqual(sorted[i - 1].tvlUSD)
+    }
+
+    console.log('  Perpl markets:')
+    markets.forEach(m =>
+      console.log(
+        `    #${m.perpId} ${m.asset.padEnd(12)} mark=$${m.markPrice.toFixed(4)}` +
+        ` oracle=$${m.oraclePrice.toFixed(4)} longOI=${m.longOI.toFixed(0)}` +
+        ` shortOI=${m.shortOI.toFixed(0)} sentiment=${m.sentiment}` +
+        ` bid=${m.minBid.toFixed(4)}–${m.maxBid.toFixed(4)} tvl=$${m.tvlUSD.toFixed(0)}`
+      )
+    )
+  }, 60_000)
+
+  it('getPerpVaultStats includes tvl, totalOI, utilizationRate, accounts', async () => {
     const stats = await getPerpVaultStats()
     expect(Array.isArray(stats)).toBe(true)
-    console.log(`  Perp vault stats: ${stats.length} protocols`)
-    stats.forEach(s => console.log(`    ${s.protocol}: TVL=$${s.tvl.toLocaleString()} util=${(s.utilizationRate*100).toFixed(1)}%`))
+    expect(stats.length).toBeGreaterThan(0)
+
+    for (const s of stats) {
+      expect(s.protocol).toBe('perpl')
+      expect(s.tvl).toBeGreaterThanOrEqual(0)
+      expect(s.totalOI).toBeGreaterThanOrEqual(0)
+      expect(s.utilizationRate).toBeGreaterThanOrEqual(0)
+      expect(s.utilizationRate).toBeLessThanOrEqual(1)
+      expect(s.accounts).toBeGreaterThanOrEqual(0)
+    }
+
+    stats.forEach(s =>
+      console.log(
+        `  ${s.protocol}: TVL=$${s.tvl.toLocaleString()} OI=$${s.totalOI.toFixed(0)}` +
+        ` util=${(s.utilizationRate * 100).toFixed(1)}% accounts=${s.accounts}`
+      )
+    )
+  }, 60_000)
+
+  it('getFundingRates returns one entry per active market', async () => {
+    const rates = await getFundingRates()
+    expect(Array.isArray(rates)).toBe(true)
+    expect(rates.length).toBeGreaterThan(0)
+
+    for (const r of rates) {
+      expect(r.protocol).toBe('perpl')
+      expect(r.asset.length).toBeGreaterThan(0)
+      expect(typeof r.rate).toBe('number')
+      expect(r.fundingInterval).toBeGreaterThan(0)
+    }
+
+    console.log('  Funding rates:')
+    rates.forEach(r =>
+      console.log(`    ${r.asset.padEnd(12)} rate=${(r.rate * 100).toFixed(5)}% interval=${r.fundingInterval} blocks`)
+    )
+  }, 60_000)
+
+  it('getPerplTVL returns positive USD value', async () => {
+    const tvl = await getPerplTVL()
+    expect(tvl).toBeGreaterThan(0)
+    console.log(`  Perpl TVL (AUSD): $${tvl.toLocaleString()}`)
   }, 30_000)
 
-  it('getTotalPerpTVL returns non-negative number', async () => {
-    const tvl = await getTotalPerpTVL()
-    expect(tvl).toBeGreaterThanOrEqual(0)
-    console.log(`  Total perp TVL: $${tvl.toLocaleString()}`)
+  it('getTotalPerpTVL equals getPerplTVL', async () => {
+    const [total, perpl] = await Promise.all([getTotalPerpTVL(), getPerplTVL()])
+    expect(total).toBe(perpl)
+    console.log(`  Total perp TVL: $${total.toLocaleString()}`)
   }, 30_000)
 })

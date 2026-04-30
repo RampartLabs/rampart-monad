@@ -16,7 +16,8 @@ import { getVerifiedPrice, getPrices, detectOracleDiscrepancy } from './protocol
 import { getPortfolio, getPortfolioSummary } from './protocols/portfolio'
 import { getMarketOverview as getMarketIntelligence, getBestYields as getTopYields, getMonadDeFiTVL, getArbitrageAlerts } from './aggregators/market'
 import { getNadFunTokens, getTrendingMemes } from './protocols/nadfun'
-import { getPerpVaultStats, getFundingRates } from './protocols/perps'
+import { getPerpVaultStats, getFundingRates, getPerplMarkets, getMondayMarkets, getPerplTVL, getTotalPerpTVL } from './protocols/perps'
+import { getBalancerPools, getBalancerTVL } from './protocols/balancer'
 import type {
   TokenPrice, StakingAPR, LendingRate, Pool, Orderbook,
   SwapSimulation, PriceComparison, YieldComparison, YieldStrategy,
@@ -165,6 +166,14 @@ export class Rampart {
   // ── Phase 15: Memecoins + Perps ───────────────────────────
   getNadFunTokens(limit?: number):      Promise<import('./protocols/nadfun').MemeToken[]>   { return getNadFunTokens(limit) }
   getTrendingMemes(limit?: number):     Promise<import('./protocols/nadfun').MemeToken[]>   { return getTrendingMemes(limit) }
+  getPerplMarkets():                    Promise<import('./protocols/perps').PerpMarket[]>   { return getPerplMarkets() }
+  getMondayMarkets():                   Promise<import('./protocols/perps').PerpMarket[]>   { return getMondayMarkets() }
   getPerpVaultStats():                  Promise<import('./protocols/perps').PerpVaultStats[]> { return getPerpVaultStats() }
   getFundingRates():                    Promise<{ protocol: string; asset: string; rate: number; fundingInterval: number }[]> { return getFundingRates() }
+  getPerplTVL():                        Promise<number>                                     { return getPerplTVL() }
+  getTotalPerpTVL():                    Promise<number>                                     { return getTotalPerpTVL() }
+
+  // ── Balancer V3 ──────────────────────────────────────────
+  getBalancerPools(maxPools?: number):  Promise<import('./protocols/balancer').BalancerPool[]> { return getBalancerPools(maxPools) }
+  getBalancerTVL():                     Promise<number>                                        { return getBalancerTVL() }
 }
