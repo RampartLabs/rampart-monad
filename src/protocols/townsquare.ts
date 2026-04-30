@@ -21,6 +21,7 @@
 // ============================================================
 
 import { publicClient } from '../chain'
+import { getVerifiedPrice } from './oracles'
 
 export const TOWNSQUARE_ADDRESSES = {
   Hub:      '0x2dfdb4bf6c910b5bbbb0d07ec5f088e294628189' as `0x${string}`,
@@ -47,8 +48,8 @@ export interface TownSquareMarket {
 }
 
 const POOL_CONFIG = [
-  { addr: TOWNSQUARE_ADDRESSES.MONPool,  symbol: 'MON',  decimals: 18, priceUSD: 0.031 },
-  { addr: TOWNSQUARE_ADDRESSES.USDCPool, symbol: 'USDC', decimals: 6,  priceUSD: 1     },
+  { addr: TOWNSQUARE_ADDRESSES.MONPool,  symbol: 'MON',  decimals: 18 },
+  { addr: TOWNSQUARE_ADDRESSES.USDCPool, symbol: 'USDC', decimals: 6  },
 ] as const
 
 /**
@@ -68,17 +69,20 @@ const POOL_CONFIG = [
  * @category Lending
  */
 export async function getTownSquareMarkets(): Promise<TownSquareMarket[]> {
+  const monPrice = await getVerifiedPrice('MON').then(r => r.bestPrice)
+
   const results = await Promise.allSettled(
     POOL_CONFIG.map(async (pool) => {
-      const [supplyRaw, nameRaw] = await Promise.allSettled([
+      const [supplyRaw] = await Promise.allSettled([
         publicClient.readContract({ address: pool.addr, abi: POOL_ABI, functionName: 'totalSupply' }),
-        publicClient.readContract({ address: pool.addr, abi: POOL_ABI, functionName: 'name' }),
       ])
 
       const totalDeposits = supplyRaw.status === 'fulfilled'
         ? Number(supplyRaw.value as bigint) / (10 ** pool.decimals)
         : 0
       if (totalDeposits === 0) return null
+
+      const priceUSD = pool.symbol === 'USDC' ? 1 : monPrice
 
       return {
         address:       pool.addr,
@@ -87,7 +91,7 @@ export async function getTownSquareMarkets(): Promise<TownSquareMarket[]> {
         totalBorrows:  0,
         supplyAPY:     0,
         borrowAPY:     0,
-        tvlUSD:        totalDeposits * pool.priceUSD,
+        tvlUSD:        totalDeposits * priceUSD,
         protocol:      'townsquare' as const,
       }
     }),

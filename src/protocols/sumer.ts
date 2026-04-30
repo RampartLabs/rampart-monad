@@ -98,14 +98,11 @@ export async function getSumerMarkets(): Promise<SumerMarket[]> {
     ? (allMarkets as `0x${string}`[])
     : [SUMER_ADDRESSES.sdrMON, SUMER_ADDRESSES.sdrUSDC, SUMER_ADDRESSES.sdrWETH]
 
-  const [monPriceObj, ethPriceObj, btcPriceObj] = await Promise.allSettled([
-    getVerifiedPrice('MON'),
-    getVerifiedPrice('WETH'),
-    getVerifiedPrice('WBTC'),
+  const [monPrice, ethPrice, btcPrice] = await Promise.all([
+    getVerifiedPrice('MON').then(r => r.bestPrice),
+    getVerifiedPrice('WETH').then(r => r.bestPrice),
+    getVerifiedPrice('WBTC').then(r => r.bestPrice),
   ])
-  const monPrice = monPriceObj.status === 'fulfilled' ? monPriceObj.value.bestPrice : 0.031
-  const ethPrice = ethPriceObj.status === 'fulfilled' ? ethPriceObj.value.bestPrice : 1800
-  const btcPrice = btcPriceObj.status === 'fulfilled' ? btcPriceObj.value.bestPrice : 95000
 
   const PRICE_MAP: Record<string, number> = {
     MON: monPrice, WMON: monPrice,

@@ -62,14 +62,11 @@ export interface FolksMarket {
 const STABLECOINS = new Set(['AUSD', 'USDT0', 'USDC', 'USDT'])
 
 async function getFolksPrices(): Promise<Record<string, number>> {
-  const [monR, btcR, ethR] = await Promise.allSettled([
-    getVerifiedPrice('MON'),
-    getVerifiedPrice('WBTC'),
-    getVerifiedPrice('WETH'),
+  const [mon, btc, eth] = await Promise.all([
+    getVerifiedPrice('MON').then(r => r.bestPrice),
+    getVerifiedPrice('WBTC').then(r => r.bestPrice),
+    getVerifiedPrice('WETH').then(r => r.bestPrice),
   ])
-  const mon = monR.status === 'fulfilled' ? monR.value.bestPrice : 0.031
-  const btc = btcR.status === 'fulfilled' ? btcR.value.bestPrice : 95000
-  const eth = ethR.status === 'fulfilled' ? ethR.value.bestPrice : 1800
   return {
     MON: mon, WMON: mon, SMON: mon, GMON: mon, SHMON: mon,
     WBTC: btc, BTC: btc,

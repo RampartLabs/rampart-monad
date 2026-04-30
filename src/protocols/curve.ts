@@ -96,7 +96,7 @@ export async function getCurvePools(maxPools = 50): Promise<CurvePool[]> {
     .filter(r => r.status === 'success')
     .map(r => r.result as `0x${string}`)
 
-  const monPrice = await getVerifiedPrice('MON').catch(() => ({ bestPrice: 0.031 }))
+  const monPrice = await getVerifiedPrice('MON')
 
   const results = await Promise.allSettled(
     pools.map(async (pool) => {

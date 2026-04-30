@@ -101,8 +101,7 @@ export async function getMellowVaults(): Promise<MellowVault[]> {
     { addr: MELLOW_ADDRESSES.Fastlane_Vault, underlying: 'shMON' },
   ]
 
-  const monPriceObj = await getVerifiedPrice('MON').catch(() => ({ bestPrice: 0.031 }))
-  const monPrice    = monPriceObj.bestPrice
+  const monPrice = await getVerifiedPrice('MON').then(r => r.bestPrice)
 
   const results = await Promise.allSettled(
     vaults.map(async ({ addr, underlying }) => {

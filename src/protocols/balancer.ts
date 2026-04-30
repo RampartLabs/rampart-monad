@@ -93,7 +93,7 @@ export async function getBalancerPools(): Promise<BalancerPool[]> {
   const pools  = await discoverPools()
   if (pools.length === 0) return []
 
-  const monPrice = await getVerifiedPrice('MON').catch(() => ({ bestPrice: 0.031 }))
+  const monPrice = await getVerifiedPrice('MON')
 
   const results = await Promise.allSettled(
     pools.map(async ({ address, type }) => {

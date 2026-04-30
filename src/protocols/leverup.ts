@@ -79,8 +79,7 @@ export async function getLeverUpStats(): Promise<LeverUpStats> {
     publicClient.readContract({ address: LEVERUP_ADDRESSES.LVMON, abi: ERC20_ABI, functionName: 'totalSupply' }),
   ])
 
-  const monPriceObj = await getVerifiedPrice('MON').catch(() => ({ bestPrice: 0.031 }))
-  const monPrice    = monPriceObj.bestPrice
+  const monPrice = await getVerifiedPrice('MON').then(r => r.bestPrice)
 
   // Collateral is likely in MON or LVUSD — convert to USD
   const collateral = collateralRaw.status  === 'fulfilled' ? Number(collateralRaw.value  as bigint) / 1e18 : 0

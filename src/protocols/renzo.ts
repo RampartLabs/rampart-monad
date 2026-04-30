@@ -49,7 +49,7 @@ export interface RenzoStats {
  *
  * Reads `totalAssets`, `totalSupply`, and the `convertToAssets(1e18)`
  * exchange rate from the ERC4626 vault, then multiplies total ETH assets
- * by the ETH/USD price from {@link getVerifiedPrice} (fallback: $1800).
+ * by the ETH/USD price from {@link getVerifiedPrice}.
  *
  * @returns Snapshot including supply, exchange rate, TVL in USD, and protocol tag
  *
@@ -73,8 +73,7 @@ export async function getRenzoStats(): Promise<RenzoStats> {
   const exchangeRate = Number(convertedRaw) / 1e18
 
   // ETH price for USD TVL
-  const ethPriceObj = await getVerifiedPrice('ETH').catch(() => ({ bestPrice: 1800 }))
-  const ethPrice = ethPriceObj.bestPrice ?? 1800
+  const ethPrice = await getVerifiedPrice('ETH').then(r => r.bestPrice)
   const tvlUSD   = totalAssets * ethPrice
 
   return {
