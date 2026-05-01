@@ -2,6 +2,20 @@
 
 All notable changes to `rampart-monad` will be documented here.
 
+## [0.1.1] — 2026-05-01
+
+### New Protocols
+- **UltraYield by Edge Capital** (`src/protocols/ultrayield.ts`) — ERC-4626 vaults on Gearbox V3; `getUltraYieldVaults()`, `getUltraYieldAPY()`, `getUltraYieldTVL()`
+- **Mu Digital** (`src/protocols/mudigital.ts`) — RWA structured credit (AZND senior, loAZND junior, muBOND fixed-rate); `getMuVaults()`, `getMuTVL()`
+
+### Aggregation Updates
+- **buildTVL** — includes UltraYield and Mu Digital vaults
+- **Gearbox** — added AUSD + USDT0 pools to `getGearboxPools()`
+
+### Test count
+- **0.1.0**: 106 tests
+- **0.1.1**: 106 tests (no regressions)
+
 ## [0.1.0] — 2026-04-20
 
 ### New Protocols — Section 2 (Phases 35–43, High Priority)

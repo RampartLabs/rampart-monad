@@ -1,6 +1,6 @@
 {
   "name": "rampart-monad",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Monad-native AgentKit SDK - 55+ protocols, one import",
   "type": "module",
   "main": "./dist/index.cjs",
