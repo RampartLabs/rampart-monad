@@ -5,7 +5,7 @@
  *
  * **TVL:** ~$1M
  * **Type:** Delta-Neutral Yield Vault
- * **Docs:** https://sherpa.finance
+ * **Docs:** https://app.sherpa.trade
  *
  * Available functions:
  * - {@link getSherpaVault} — main vault stats (TVL, exchange rate, APY)

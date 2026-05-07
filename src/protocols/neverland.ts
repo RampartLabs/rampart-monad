@@ -4,7 +4,7 @@
  *
  * **TVL:** ~$8M
  * **Type:** Lending (Aave V3 fork)
- * **Docs:** https://neverland.finance
+ * **Docs:** https://neverland.money
  *
  * Available functions:
  * - {@link getLendingRates} — supply/borrow APY for all Neverland assets

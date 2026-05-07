@@ -6,7 +6,7 @@
  *
  * **TVL:** ~$500K
  * **Type:** Concentrated Liquidity DEX (Uniswap V3 fork)
- * **Docs:** https://capricorn.finance
+ * **Docs:** https://capricorn.exchange
  *
  * Available functions:
  * - {@link getCapricornPools} — all Capricorn concentrated liquidity pools

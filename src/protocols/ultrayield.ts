@@ -6,7 +6,7 @@
  *
  * **TVL:** ~$24M (counted inside Gearbox lending bucket)
  * **Type:** Yield Vault (ERC-4626, Gearbox V3 underlying)
- * **Docs:** https://ultrayield.edge.capital
+ * **Docs:** https://ultrayield.app
  *
  * Available functions:
  * - {@link getUltraYieldVaults} — all three UltraYield vaults with APY and TVL

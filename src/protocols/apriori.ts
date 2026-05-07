@@ -4,7 +4,7 @@
  *
  * **TVL:** ~$28.6M
  * **Type:** Liquid Staking (ERC4626)
- * **Docs:** https://apriori.finance
+ * **Docs:** https://apr.io
  *
  * Available functions:
  * - {@link getAPrioriExchangeRate} — current aprMON→MON exchange rate

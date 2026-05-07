@@ -7,7 +7,7 @@
  *
  * **TVL:** ~$2M
  * **Type:** Cross-Chain Lending
- * **Docs:** https://docs.townsquare.fi
+ * **Docs:** https://docs.townsq.xyz
  *
  * Available functions:
  * - {@link getTownSquareMarkets} — lending market stats (deposits, borrows, APY)

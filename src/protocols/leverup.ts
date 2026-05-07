@@ -5,7 +5,7 @@
  *
  * **TVL:** ~$2M
  * **Type:** Leveraged Perps + LVUSD
- * **Docs:** https://leverup.io
+ * **Docs:** https://app.leverup.xyz
  *
  * Available functions:
  * - {@link getLeverUpStats} — LVUSD supply, LVMON supply, collateral ratio

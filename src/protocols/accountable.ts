@@ -6,7 +6,7 @@
  *
  * **TVL:** ~$2M
  * **Type:** Undercollateralized Lending (ERC-7540)
- * **Docs:** https://accountable.finance
+ * **Docs:** https://accountable.capital
  *
  * Available functions:
  * - {@link getAccountableVaults} — all fixed-term and open-term lending vaults
