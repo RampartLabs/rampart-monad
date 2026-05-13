@@ -88,8 +88,19 @@ export { getRenzoStats, getRenzoTVL, RENZO_EZ_ETH } from './protocols/renzo'
 export type { RenzoStats } from './protocols/renzo'
 
 // Phase 27 — Beefy Finance (yield optimizer)
-export { getBeefyVaults, getBeefyBestVault, getBeefyTVL, BEEFY_ADDRESSES } from './protocols/beefy'
-export type { BeefyVault } from './protocols/beefy'
+export {
+  getBeefyVaults, getBeefyVaultsDetailed, getBeefyBestVault, getBeefyTVL,
+  getBeefyApyBreakdown, getBeefyFees,
+  getBeefyLPs, getBeefyLPBreakdown,
+  getBeefyTokens, getBeefyBoosts, getBeefyConfig,
+  getBeefyHistoricalPrices, getBeefyWalletTimeline,
+  BEEFY_ADDRESSES,
+} from './protocols/beefy'
+export type {
+  BeefyVault, BeefyVaultDetailed, BeefyApyBreakdown, BeefyFees,
+  BeefyLP, BeefyLPBreakdown, BeefyToken, BeefyBoost, BeefyConfig,
+  BeefyPricePoint, BeefyWalletEvent,
+} from './protocols/beefy'
 
 // Phase 28 — WooFi DEX (PMM)
 export { getWooFiPools, getWooFiQuote, WOOFI_ADDRESSES } from './protocols/woofi'

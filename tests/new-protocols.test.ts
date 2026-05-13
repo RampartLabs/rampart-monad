@@ -4,7 +4,13 @@ import { describe, it, expect } from 'vitest'
 import { getRenzoStats, RENZO_EZ_ETH } from '../src/protocols/renzo'
 
 // Phase 27 — Beefy
-import { getBeefyVaults, getBeefyTVL, BEEFY_ADDRESSES } from '../src/protocols/beefy'
+import {
+  getBeefyVaults, getBeefyVaultsDetailed, getBeefyBestVault, getBeefyTVL,
+  getBeefyApyBreakdown, getBeefyFees,
+  getBeefyLPs, getBeefyLPBreakdown,
+  getBeefyTokens, getBeefyBoosts, getBeefyConfig,
+  BEEFY_ADDRESSES,
+} from '../src/protocols/beefy'
 
 // Phase 28 — WooFi
 import { getWooFiPools, WOOFI_ADDRESSES } from '../src/protocols/woofi'
@@ -52,19 +58,88 @@ describe('Renzo Protocol (Phase 26)', () => {
 describe('Beefy Finance (Phase 27)', () => {
   it('BEEFY_ADDRESSES has correct factory', () => {
     expect(BEEFY_ADDRESSES.vaultFactory).toBe('0x9818dF1Bdce8D0E79B982e2C3a93ac821b3c17e0')
+    expect(BEEFY_ADDRESSES.clmFactory).toBe('0x03C2E2e84031d913d45B1F5b5dDC8E50Fcb28652')
   })
 
-  it('getBeefyVaults returns array (may be empty if no API result)', async () => {
+  it('getBeefyVaults returns array', async () => {
     const vaults = await getBeefyVaults()
     expect(Array.isArray(vaults)).toBe(true)
     console.log(`  Beefy vaults on Monad: ${vaults.length}`)
-    vaults.slice(0, 3).forEach(v => console.log(`    ${v.id} apy=${(v.apy * 100).toFixed(2)}% tvl=$${v.tvlUSD.toFixed(0)}`))
+    vaults.slice(0, 3).forEach(v => console.log(`    ${v.id} apy=${(v.apy * 100).toFixed(2)}% tvl=$${v.tvlUSD.toFixed(0)} paused=${v.depositsPaused}`))
+  })
+
+  it('getBeefyVaultsDetailed returns vaults with breakdown fields', async () => {
+    const vaults = await getBeefyVaultsDetailed()
+    expect(Array.isArray(vaults)).toBe(true)
+    console.log(`  Beefy detailed vaults: ${vaults.length}`)
+    if (vaults.length > 0) {
+      const v = vaults[0]
+      console.log(`    ${v.id} fees=${JSON.stringify(v.fees)} apyBreakdown=${JSON.stringify(v.apyBreakdown)}`)
+    }
+  })
+
+  it('getBeefyBestVault returns null or vault with highest APY', async () => {
+    const best = await getBeefyBestVault()
+    if (best) {
+      expect(best.status).toBe('active')
+      expect(best.apy).toBeGreaterThanOrEqual(0)
+      console.log(`  Beefy best vault: ${best.id} apy=${(best.apy * 100).toFixed(2)}%`)
+    } else {
+      console.log('  Beefy best vault: null (no vaults on Monad yet)')
+    }
   })
 
   it('getBeefyTVL returns non-negative number', async () => {
     const tvl = await getBeefyTVL()
     expect(tvl).toBeGreaterThanOrEqual(0)
     console.log(`  Beefy TVL on Monad: $${tvl.toLocaleString()}`)
+  })
+
+  it('getBeefyApyBreakdown returns array', async () => {
+    const breakdowns = await getBeefyApyBreakdown()
+    expect(Array.isArray(breakdowns)).toBe(true)
+    console.log(`  Beefy APY breakdowns: ${breakdowns.length}`)
+    breakdowns.slice(0, 2).forEach(b => console.log(`    ${b.vaultId} totalApy=${(b.totalApy * 100).toFixed(2)}% tradingApr=${(b.tradingApr * 100).toFixed(2)}%`))
+  })
+
+  it('getBeefyFees returns array with fee structure', async () => {
+    const fees = await getBeefyFees()
+    expect(Array.isArray(fees)).toBe(true)
+    console.log(`  Beefy fee entries: ${fees.length}`)
+    fees.slice(0, 2).forEach(f => console.log(`    ${f.vaultId} perf=${f.performance} withdraw=${f.withdrawal}`))
+  })
+
+  it('getBeefyLPs returns LP prices array', async () => {
+    const lps = await getBeefyLPs()
+    expect(Array.isArray(lps)).toBe(true)
+    console.log(`  Beefy LPs on Monad: ${lps.length}`)
+    lps.slice(0, 3).forEach(lp => console.log(`    ${lp.id} price=$${lp.price.toFixed(4)}`))
+  })
+
+  it('getBeefyLPBreakdown returns LP breakdown array', async () => {
+    const breakdowns = await getBeefyLPBreakdown()
+    expect(Array.isArray(breakdowns)).toBe(true)
+    console.log(`  Beefy LP breakdowns: ${breakdowns.length}`)
+  })
+
+  it('getBeefyTokens returns token array', async () => {
+    const tokens = await getBeefyTokens()
+    expect(Array.isArray(tokens)).toBe(true)
+    console.log(`  Beefy tokens on Monad: ${tokens.length}`)
+    tokens.slice(0, 3).forEach(t => console.log(`    ${t.symbol} ${t.address}`))
+  })
+
+  it('getBeefyBoosts returns boosts array', async () => {
+    const boosts = await getBeefyBoosts()
+    expect(Array.isArray(boosts)).toBe(true)
+    console.log(`  Beefy boosts on Monad: ${boosts.length}`)
+    boosts.slice(0, 2).forEach(b => console.log(`    ${b.id} status=${b.status}`))
+  })
+
+  it('getBeefyConfig returns config object', async () => {
+    const cfg = await getBeefyConfig()
+    expect(typeof cfg).toBe('object')
+    console.log(`  Beefy config keys: ${Object.keys(cfg).join(', ')}`)
   })
 })
 
