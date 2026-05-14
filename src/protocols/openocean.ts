@@ -13,11 +13,17 @@
  * - {@link getOpenOceanQuote} — get a swap quote for a token pair and amount
  * - {@link getOpenOceanPrice} — mid-price for 1 unit of tokenIn
  * - {@link isOpenOceanAvailable} — check if the ExchangeProxy is deployed
+ * - {@link buildOpenOceanSwap} — encoded tx data for executing a swap on-chain
+ * - {@link getOpenOceanGasPrice} — current gas prices (standard/fast/instant) from OpenOcean
+ * - {@link getOpenOceanTokens} — full token list supported by OpenOcean on Monad
  */
 
 // ============================================================
 // Rampart SDK — OpenOcean on Monad
 // DEX aggregator with ExchangeProxy for optimal swap routing.
+// ExchangeProxy (= ExchangeV2): 0x6352a56caadC4F1E25CD6c75970Fa768A3304e64
+// Both ExchangeProxy and ExchangeV2 point to the same contract — confirmed via
+// live swap API response (the 'to' field returns this address).
 // Source: github.com/monad-crypto/protocols/mainnet/openocean.jsonc
 // ============================================================
 
@@ -45,11 +51,48 @@ export interface OpenOceanQuote {
   protocol:  'openocean'
 }
 
+export interface OpenOceanSwapTx {
+  to:           string
+  data:         string
+  value:        string
+  estimatedGas: number
+  minOutAmount: string
+  protocol:     'openocean'
+}
+
+export interface OpenOceanGasPrice {
+  standard: number
+  fast:     number
+  instant:  number
+}
+
+export interface OpenOceanToken {
+  id:       number
+  symbol:   string
+  name:     string
+  address:  string
+  decimals: number
+  usd:      string
+  chain:    string
+}
+
+async function fetchGasPriceStandard(): Promise<number> {
+  try {
+    const resp = await fetch(`${OPENOCEAN_API}/gasPrice`)
+    if (!resp.ok) return 50
+    const data = await resp.json()
+    return Number(data?.without_decimals?.standard ?? data?.data?.without_decimals?.standard ?? 50)
+  } catch {
+    return 50
+  }
+}
+
 /**
  * Returns an OpenOcean swap quote for a given token pair and input amount.
  *
  * Resolves token addresses from the registry, converts `amountIn` to the
  * smallest unit, then queries `open-api.openocean.finance/v4/monad/quote`.
+ * Gas price is fetched dynamically from OpenOcean's gasPrice endpoint.
  * Returns zeros on any API or token-lookup failure.
  *
  * @param tokenIn  - Input token symbol (e.g. `'WMON'`).
@@ -71,24 +114,21 @@ export async function getOpenOceanQuote(
   amountIn: number,
 ): Promise<OpenOceanQuote> {
   let inAddr: string, outAddr: string
-  let inDecimals = 18, outDecimals = 18
+  let outDecimals = 18
   try {
     const tIn  = getToken(tokenIn)
     const tOut = getToken(tokenOut)
-    inAddr     = tIn.address
-    outAddr    = tOut.address
-    inDecimals  = tIn.decimals  ?? 18
+    inAddr      = tIn.address
+    outAddr     = tOut.address
     outDecimals = tOut.decimals ?? 18
   } catch {
     return { tokenIn, tokenOut, amountIn, amountOut: 0, price: 0, gasEstimate: 0, protocol: 'openocean' }
   }
 
-  // OpenOcean API takes amount in human-readable units (e.g. 100 for 100 USDC),
-  // not in raw token units — it handles the decimal conversion internally
-  const amountInRaw = amountIn.toString()
+  const gasPrice = await fetchGasPriceStandard()
 
   try {
-    const url = `${OPENOCEAN_API}/quote?inTokenAddress=${inAddr}&outTokenAddress=${outAddr}&amount=${amountInRaw}&gasPrice=50`
+    const url = `${OPENOCEAN_API}/quote?inTokenAddress=${inAddr}&outTokenAddress=${outAddr}&amount=${amountIn}&gasPrice=${gasPrice}`
     const resp = await fetch(url)
     if (!resp.ok) throw new Error(`HTTP ${resp.status}`)
     const data = await resp.json() as { data?: { outAmount?: string; estimatedGas?: number } }
@@ -146,4 +186,138 @@ export async function getOpenOceanPrice(tokenIn: string, tokenOut: string): Prom
 export async function isOpenOceanAvailable(): Promise<boolean> {
   const code = await publicClient.getBytecode({ address: OPENOCEAN_ADDRESSES.ExchangeProxy }).catch(() => null)
   return !!code && code !== '0x'
+}
+
+/**
+ * Fetches encoded transaction data for executing a swap via OpenOcean on Monad.
+ *
+ * Calls `GET /v4/monad/swap` which returns a fully built transaction (to, data, value)
+ * ready for signing. Gas price is fetched dynamically from OpenOcean's gasPrice endpoint.
+ *
+ * @param tokenIn    - Input token symbol (e.g. `'WMON'`).
+ * @param tokenOut   - Output token symbol (e.g. `'USDC'`).
+ * @param amountIn   - Human-readable input amount (e.g. `10` for 10 WMON).
+ * @param slippageBps - Slippage tolerance in basis points (e.g. `50` = 0.5%).
+ * @param account    - Sender address (used for slippage and min-out calculation).
+ * @returns {@link OpenOceanSwapTx} with `to`, `data`, `value`, `estimatedGas`, or `null` on failure.
+ *
+ * @example
+ * ```typescript
+ * const tx = await buildOpenOceanSwap('WMON', 'USDC', 10, 50, '0xYourAddress')
+ * // → { to: '0x6352...', data: '0x...', value: '0', estimatedGas: 260000, ... }
+ * ```
+ *
+ * @category DEX
+ */
+export async function buildOpenOceanSwap(
+  tokenIn:    string,
+  tokenOut:   string,
+  amountIn:   number,
+  slippageBps: number,
+  account:    string,
+): Promise<OpenOceanSwapTx | null> {
+  let inAddr: string, outAddr: string
+  try {
+    inAddr  = getToken(tokenIn).address
+    outAddr = getToken(tokenOut).address
+  } catch { return null }
+
+  const slippage = slippageBps / 100
+
+  const gasPrice = await fetchGasPriceStandard()
+
+  try {
+    const url = `${OPENOCEAN_API}/swap?inTokenAddress=${inAddr}&outTokenAddress=${outAddr}&amount=${amountIn}&gasPrice=${gasPrice}&slippage=${slippage}&account=${account}`
+    const resp = await fetch(url)
+    if (!resp.ok) return null
+    const data = await resp.json() as {
+      data?: {
+        to?:           string
+        data?:         string
+        value?:        string
+        estimatedGas?: number
+        minOutAmount?: string
+      }
+    }
+    const d = data?.data
+    if (!d?.to || !d?.data) return null
+
+    return {
+      to:           d.to,
+      data:         d.data,
+      value:        d.value ?? '0',
+      estimatedGas: d.estimatedGas ?? 0,
+      minOutAmount: d.minOutAmount ?? '0',
+      protocol:     'openocean',
+    }
+  } catch {
+    return null
+  }
+}
+
+/**
+ * Fetches current gas prices from OpenOcean on Monad.
+ *
+ * Returns standard, fast, and instant gas prices (in Gwei, without decimals).
+ *
+ * @returns {@link OpenOceanGasPrice} with standard/fast/instant values, or `null` on failure.
+ *
+ * @example
+ * ```typescript
+ * const gas = await getOpenOceanGasPrice()
+ * // → { standard: 102, fast: 102, instant: 102 }
+ * ```
+ *
+ * @category DEX
+ */
+export async function getOpenOceanGasPrice(): Promise<OpenOceanGasPrice | null> {
+  try {
+    const resp = await fetch(`${OPENOCEAN_API}/gasPrice`)
+    if (!resp.ok) return null
+    const data = await resp.json()
+    const src = data?.without_decimals ?? data?.data?.without_decimals
+    if (!src) return null
+    return {
+      standard: Number(src.standard),
+      fast:     Number(src.fast),
+      instant:  Number(src.instant),
+    }
+  } catch {
+    return null
+  }
+}
+
+/**
+ * Fetches the full list of tokens supported by OpenOcean on Monad.
+ *
+ * Calls `GET /v4/monad/tokenList`.
+ *
+ * @returns Array of {@link OpenOceanToken} objects, or `[]` on failure.
+ *
+ * @example
+ * ```typescript
+ * const tokens = await getOpenOceanTokens()
+ * // → [{ symbol: 'MON', address: '0x000...', decimals: 18, usd: '0.029', ... }, ...]
+ * ```
+ *
+ * @category DEX
+ */
+export async function getOpenOceanTokens(): Promise<OpenOceanToken[]> {
+  try {
+    const resp = await fetch(`${OPENOCEAN_API}/tokenList`)
+    if (!resp.ok) return []
+    const data = await resp.json() as { data?: any[] }
+    if (!Array.isArray(data?.data)) return []
+    return data.data.map((t: any) => ({
+      id:       t.id,
+      symbol:   t.symbol,
+      name:     t.name,
+      address:  t.address,
+      decimals: t.decimals,
+      usd:      t.usd ?? '0',
+      chain:    t.chain ?? 'monad',
+    }))
+  } catch {
+    return []
+  }
 }

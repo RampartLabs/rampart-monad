@@ -219,7 +219,7 @@ describe('Bean Exchange (Phase 31)', () => {
 describe('Sablier Streaming (Phase 32)', () => {
   it('SABLIER_ADDRESSES has correct contracts', () => {
     expect(SABLIER_ADDRESSES.lockup).toBe('0x82723C1ffEc9D43dE5FA80b25Da8df99AfD470ba')
-    expect(SABLIER_ADDRESSES.batchLockup).toBe('0x4FCACf614E456728CaEa87f475bd78EC3550E20B')
+    expect(SABLIER_ADDRESSES.batchLockup).toBe('0xB02d463F531c3eB1a92B18B9d4756e9d03AB2562')
   })
 
   it('getSablierStreamCount returns non-negative number', async () => {

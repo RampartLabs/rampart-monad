@@ -22,10 +22,15 @@
 // ============================================================
 
 import { publicClient } from '../chain'
+import { getVerifiedPrice } from './oracles'
 
 export const ENJOYOORS_ADDRESSES = {
-  Vault: '0x6B5E332387e8beC98C52F10A72952B17176B4f1b' as `0x${string}`,
+  Vault:  '0x6B5E332387e8beC98C52F10A72952B17176B4f1b' as `0x${string}`,
 } as const
+
+const KNOWN_VAULT_ADDRESSES: `0x${string}`[] = [
+  '0x6B5E332387e8beC98C52F10A72952B17176B4f1b',
+]
 
 const VAULT_ABI = [
   { name: 'totalAssets',     type: 'function' as const, inputs: [], outputs: [{ type: 'uint256' }], stateMutability: 'view' as const },
@@ -44,6 +49,7 @@ export interface EnjoyoorsVault {
   address:      string
   name:         string
   asset:        string
+  assetSymbol:  string
   totalAssets:  number
   totalSupply:  number
   exchangeRate: number
@@ -71,21 +77,25 @@ export interface EnjoyoorsVault {
  *
  * @category Yield
  */
-export async function getEnjoyoorsVault(): Promise<EnjoyoorsVault> {
-  const blockNow = await publicClient.getBlockNumber().catch(() => 0n)
-  const DELTA    = 7_200n  // ~1 hour
+async function fetchEnjoyoorsVault(vaultAddr: `0x${string}`): Promise<EnjoyoorsVault> {
+  const blockNow  = await publicClient.getBlockNumber().catch(() => 0n)
+  const DELTA_1H  = 7_200n
+  const DELTA_24H = 7_200n * 24n
+  const DELTA_7D  = 7_200n * 168n
 
-  const [totalAssetsRaw, totalSupplyRaw, rateNow, ratePast, assetAddrRaw, nameRaw] = await Promise.allSettled([
-    publicClient.readContract({ address: ENJOYOORS_ADDRESSES.Vault, abi: VAULT_ABI, functionName: 'totalAssets' }),
-    publicClient.readContract({ address: ENJOYOORS_ADDRESSES.Vault, abi: VAULT_ABI, functionName: 'totalSupply' }),
-    publicClient.readContract({ address: ENJOYOORS_ADDRESSES.Vault, abi: VAULT_ABI, functionName: 'convertToAssets', args: [1_000_000_000_000_000_000n] }),
-    publicClient.readContract({ address: ENJOYOORS_ADDRESSES.Vault, abi: VAULT_ABI, functionName: 'convertToAssets', args: [1_000_000_000_000_000_000n], blockNumber: blockNow > DELTA ? blockNow - DELTA : 1n }),
-    publicClient.readContract({ address: ENJOYOORS_ADDRESSES.Vault, abi: VAULT_ABI, functionName: 'asset' }),
-    publicClient.readContract({ address: ENJOYOORS_ADDRESSES.Vault, abi: VAULT_ABI, functionName: 'name' }),
+  const [totalAssetsRaw, totalSupplyRaw, rateNow, rate1hAgo, rate24hAgo, rate7dAgo, assetAddrRaw, nameRaw] = await Promise.allSettled([
+    publicClient.readContract({ address: vaultAddr, abi: VAULT_ABI, functionName: 'totalAssets' }),
+    publicClient.readContract({ address: vaultAddr, abi: VAULT_ABI, functionName: 'totalSupply' }),
+    publicClient.readContract({ address: vaultAddr, abi: VAULT_ABI, functionName: 'convertToAssets', args: [1_000_000_000_000_000_000n] }),
+    publicClient.readContract({ address: vaultAddr, abi: VAULT_ABI, functionName: 'convertToAssets', args: [1_000_000_000_000_000_000n], blockNumber: blockNow > DELTA_1H  ? blockNow - DELTA_1H  : 1n }),
+    publicClient.readContract({ address: vaultAddr, abi: VAULT_ABI, functionName: 'convertToAssets', args: [1_000_000_000_000_000_000n], blockNumber: blockNow > DELTA_24H ? blockNow - DELTA_24H : 1n }),
+    publicClient.readContract({ address: vaultAddr, abi: VAULT_ABI, functionName: 'convertToAssets', args: [1_000_000_000_000_000_000n], blockNumber: blockNow > DELTA_7D  ? blockNow - DELTA_7D  : 1n }),
+    publicClient.readContract({ address: vaultAddr, abi: VAULT_ABI, functionName: 'asset' }),
+    publicClient.readContract({ address: vaultAddr, abi: VAULT_ABI, functionName: 'name' }),
   ])
 
   const assetAddr = assetAddrRaw.status === 'fulfilled' ? (assetAddrRaw.value as string) : ''
-  let assetSymbol = 'MON'
+  let assetSymbol = ''
   let decimals    = 18
   if (assetAddr) {
     const [sym, dec] = await Promise.allSettled([
@@ -96,21 +106,40 @@ export async function getEnjoyoorsVault(): Promise<EnjoyoorsVault> {
     if (dec.status === 'fulfilled') decimals    = Number(dec.value as number)
   }
 
-  const totalAssets = totalAssetsRaw.status === 'fulfilled' ? Number(totalAssetsRaw.value as bigint) / (10 ** decimals) : 0
-  const totalSupply = totalSupplyRaw.status === 'fulfilled' ? Number(totalSupplyRaw.value as bigint) / (10 ** decimals) : 0
-  const r0          = rateNow.status  === 'fulfilled' ? Number(rateNow.value  as bigint) / 1e18 : 1
-  const r1          = ratePast.status === 'fulfilled' ? Number(ratePast.value as bigint) / 1e18 : 1
-  const name        = nameRaw.status  === 'fulfilled' ? (nameRaw.value as string) : 'Enjoyoors Vault'
+  const divisor     = 10n ** BigInt(decimals)
+  const totalAssets = totalAssetsRaw.status === 'fulfilled' ? Number((totalAssetsRaw.value as bigint) * 1_000_000n / divisor) / 1_000_000 : 0
+  const totalSupply = totalSupplyRaw.status === 'fulfilled' ? Number((totalSupplyRaw.value as bigint) * 1_000_000n / divisor) / 1_000_000 : 0
+  const r0 = rateNow.status    === 'fulfilled' ? Number(rateNow.value    as bigint) / 1e18 : 1
+  const r1 = rate1hAgo.status  === 'fulfilled' ? Number(rate1hAgo.value  as bigint) / 1e18 : 0
+  const r2 = rate24hAgo.status === 'fulfilled' ? Number(rate24hAgo.value as bigint) / 1e18 : 0
+  const r7 = rate7dAgo.status  === 'fulfilled' ? Number(rate7dAgo.value  as bigint) / 1e18 : 0
+  const name = nameRaw.status === 'fulfilled' ? (nameRaw.value as string) : 'Enjoyoors Vault'
 
-  const growthPerHour = r1 > 0 ? (r0 - r1) / r1 : 0
-  const apy           = Math.max(0, growthPerHour * 24 * 365)
+  const blocksPerYear = (365 * 24 * 3600 * 1000) / 400
+  let apy = 0
+  if (r1 > 0 && r0 !== r1) {
+    apy = ((r0 - r1) / r1) * (blocksPerYear / Number(DELTA_1H))
+  } else if (r2 > 0 && r0 !== r2) {
+    apy = ((r0 - r2) / r2) * (blocksPerYear / Number(DELTA_24H))
+  } else if (r7 > 0 && r0 !== r7) {
+    apy = ((r0 - r7) / r7) * (blocksPerYear / Number(DELTA_7D))
+  }
+
+  const assetPrice = assetSymbol
+    ? await getVerifiedPrice(assetSymbol).then(p => p.bestPrice).catch(() => 1)
+    : 1
+  const tvlUSD = totalAssets * assetPrice
 
   return {
-    address: ENJOYOORS_ADDRESSES.Vault,
-    name, asset: assetSymbol, totalAssets, totalSupply,
-    exchangeRate: r0, tvlUSD: totalAssets, apy,
+    address: vaultAddr,
+    name, asset: assetAddr || assetSymbol, assetSymbol, totalAssets, totalSupply,
+    exchangeRate: r0, tvlUSD, apy,
     protocol: 'enjoyoors',
   }
+}
+
+export async function getEnjoyoorsVault(): Promise<EnjoyoorsVault> {
+  return fetchEnjoyoorsVault(ENJOYOORS_ADDRESSES.Vault)
 }
 
 /**
@@ -130,8 +159,10 @@ export async function getEnjoyoorsVault(): Promise<EnjoyoorsVault> {
  * @category Yield
  */
 export async function getEnjoyoorsVaults(): Promise<EnjoyoorsVault[]> {
-  const vault = await getEnjoyoorsVault()
-  return [vault]
+  const results = await Promise.allSettled(
+    KNOWN_VAULT_ADDRESSES.map(addr => fetchEnjoyoorsVault(addr))
+  )
+  return results.flatMap(r => r.status === 'fulfilled' ? [r.value] : [])
 }
 
 /**
@@ -151,6 +182,6 @@ export async function getEnjoyoorsVaults(): Promise<EnjoyoorsVault[]> {
  * @category Yield
  */
 export async function getEnjoyoorsTVL(): Promise<number> {
-  const vault = await getEnjoyoorsVault()
-  return vault.tvlUSD
+  const vaults = await getEnjoyoorsVaults()
+  return vaults.reduce((s, v) => s + v.tvlUSD, 0)
 }

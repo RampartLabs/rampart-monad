@@ -100,6 +100,38 @@ const UNI_V3_FACTORY_ABI = [
     outputs: [{ type: 'address' }] },
 ] as const
 
+const POOL_CREATED_EVENT_ABI = [{
+  name: 'PoolCreated', type: 'event' as const,
+  inputs: [
+    { name: 'token0', type: 'address', indexed: true  },
+    { name: 'token1', type: 'address', indexed: true  },
+    { name: 'fee',    type: 'uint24',  indexed: true  },
+    { name: 'tickSpacing', type: 'int24', indexed: false },
+    { name: 'pool',   type: 'address', indexed: false },
+  ],
+}] as const
+
+const UNI_V3_POOL_ABI = [
+  { name: 'token0',    type: 'function' as const, stateMutability: 'view' as const, inputs: [], outputs: [{ type: 'address' }] },
+  { name: 'token1',    type: 'function' as const, stateMutability: 'view' as const, inputs: [], outputs: [{ type: 'address' }] },
+  { name: 'fee',       type: 'function' as const, stateMutability: 'view' as const, inputs: [], outputs: [{ type: 'uint24' }]  },
+  { name: 'liquidity', type: 'function' as const, stateMutability: 'view' as const, inputs: [], outputs: [{ type: 'uint128' }] },
+  { name: 'slot0',     type: 'function' as const, stateMutability: 'view' as const, inputs: [], outputs: [
+    { name: 'sqrtPriceX96', type: 'uint160' },
+    { name: 'tick',         type: 'int24'   },
+    { name: 'observationIndex', type: 'uint16' },
+    { name: 'observationCardinality', type: 'uint16' },
+    { name: 'observationCardinalityNext', type: 'uint16' },
+    { name: 'feeProtocol', type: 'uint8' },
+    { name: 'unlocked', type: 'bool' },
+  ]},
+] as const
+
+const ERC20_SYMBOL_ABI = [
+  { name: 'symbol',   type: 'function' as const, stateMutability: 'view' as const, inputs: [], outputs: [{ type: 'string' }] },
+  { name: 'decimals', type: 'function' as const, stateMutability: 'view' as const, inputs: [], outputs: [{ type: 'uint8'  }] },
+] as const
+
 export interface PerpMarket {
   protocol:          'monday' | 'perpl'
   perpId:            number
@@ -115,6 +147,7 @@ export interface PerpMarket {
   maxBid:            number
   minBid:            number
   sentiment:         'bullish' | 'bearish' | 'neutral'
+  isHalted?:         boolean
 }
 
 export interface PerpVaultStats {
@@ -126,12 +159,20 @@ export interface PerpVaultStats {
 }
 
 async function probePerplMarkets(): Promise<PerpMarket[]> {
-  const fundingInterval = await publicClient.readContract({
-    address: PERPL_EXCHANGE, abi: MISC_ABI, functionName: 'getFundingInterval',
-  }).catch(() => 8571n)
+  const [fundingInterval, exchangeInfo, halted] = await Promise.all([
+    publicClient.readContract({ address: PERPL_EXCHANGE, abi: MISC_ABI, functionName: 'getFundingInterval' }).catch(() => 8571n),
+    publicClient.readContract({ address: PERPL_EXCHANGE, abi: EXCHANGE_INFO_ABI, functionName: 'getExchangeInfo' }).catch(() => null),
+    publicClient.readContract({ address: PERPL_EXCHANGE, abi: MISC_ABI, functionName: 'isHalted' }).catch(() => false),
+  ])
 
+  const collateralDecimals = exchangeInfo
+    ? Number((exchangeInfo as { collateralDecimals: bigint }).collateralDecimals)
+    : 6
+  const collateralDivisor = 10n ** BigInt(collateralDecimals)
+
+  const MAX_PROBE = 50
   const results = await Promise.allSettled(
-    Array.from({ length: 50 }, (_, i) =>
+    Array.from({ length: MAX_PROBE }, (_, i) =>
       publicClient.readContract({
         address: PERPL_EXCHANGE, abi: PERP_INFO_ABI, functionName: 'getPerpetualInfo', args: [BigInt(i + 1)],
       })
@@ -139,9 +180,15 @@ async function probePerplMarkets(): Promise<PerpMarket[]> {
   )
 
   const markets: PerpMarket[] = []
+  let consecutiveFails = 0
   for (let i = 0; i < results.length; i++) {
     const r = results[i]
-    if (r.status !== 'fulfilled') continue
+    if (r.status !== 'fulfilled') {
+      consecutiveFails++
+      if (consecutiveFails >= 3) break
+      continue
+    }
+    consecutiveFails = 0
     const p = r.value as {
       name: string; symbol: string; priceDecimals: bigint; lotDecimals: bigint;
       positionBalanceCNS: bigint; markPNS: bigint; oraclePNS: bigint;
@@ -164,10 +211,11 @@ async function probePerplMarkets(): Promise<PerpMarket[]> {
       totalOI:         longOI + shortOI,
       fundingRatePct:  p.fundingRatePct100k / 100000,
       fundingInterval: Number(fundingInterval),
-      tvlUSD:          Number(p.positionBalanceCNS) / 1e6,
+      tvlUSD:          Number(p.positionBalanceCNS / collateralDivisor),
       maxBid:          Number(p.maxBidPriceONS) / scale,
       minBid:          Number(p.minBidPriceONS) / scale,
       sentiment:       longOI > shortOI * 1.1 ? 'bullish' : shortOI > longOI * 1.1 ? 'bearish' : 'neutral',
+      isHalted:        halted as boolean,
     })
   }
   return markets
@@ -175,15 +223,86 @@ async function probePerplMarkets(): Promise<PerpMarket[]> {
 
 /**
  * Returns Monday Trade spot pools from the Uniswap V3 factory on Monad.
- * Monday Trade is a Uniswap V3 fork; perpetuals run on unverified SynFutures contracts.
- * Returns empty array — use {@link getUniswapPools} / Kuru for Monday spot liquidity.
+ * Monday Trade is a Uniswap V3 fork — discovers pools via PoolCreated events (last 500K blocks).
  *
- * @returns Empty array (Monday perp ABI not yet publicly available)
+ * @returns Array of {@link PerpMarket} with protocol: 'monday', real on-chain data
  *
  * @category Perps
  */
 export async function getMondayMarkets(): Promise<PerpMarket[]> {
-  return []
+  try {
+    const latestBlock = await publicClient.getBlockNumber()
+    const fromBlock   = latestBlock > 500_000n ? latestBlock - 500_000n : 0n
+
+    const logs = await publicClient.getLogs({
+      address:   MONDAY_FACTORY,
+      event:     POOL_CREATED_EVENT_ABI[0],
+      fromBlock,
+      toBlock:   latestBlock,
+    }).catch(() => [])
+
+    if (logs.length === 0) return []
+
+    const unique = new Map<string, typeof logs[number]>()
+    for (const log of logs) {
+      const addr = (log.args as any).pool as string
+      if (addr && addr !== '0x0000000000000000000000000000000000000000') {
+        unique.set(addr.toLowerCase(), log)
+      }
+    }
+
+    const markets: PerpMarket[] = []
+
+    await Promise.allSettled(
+      [...unique.entries()].map(async ([, log]) => {
+        const args = log.args as { token0: `0x${string}`; token1: `0x${string}`; fee: number; pool: `0x${string}` }
+        const poolAddr = args.pool
+
+        const [slot0Raw, liquidityRaw, sym0, sym1, dec0, dec1] = await Promise.all([
+          publicClient.readContract({ address: poolAddr, abi: UNI_V3_POOL_ABI, functionName: 'slot0' }).catch(() => null),
+          publicClient.readContract({ address: poolAddr, abi: UNI_V3_POOL_ABI, functionName: 'liquidity' }).catch(() => 0n),
+          publicClient.readContract({ address: args.token0, abi: ERC20_SYMBOL_ABI, functionName: 'symbol' }).catch(() => args.token0.slice(0, 8)),
+          publicClient.readContract({ address: args.token1, abi: ERC20_SYMBOL_ABI, functionName: 'symbol' }).catch(() => args.token1.slice(0, 8)),
+          publicClient.readContract({ address: args.token0, abi: ERC20_SYMBOL_ABI, functionName: 'decimals' }).catch(() => 18),
+          publicClient.readContract({ address: args.token1, abi: ERC20_SYMBOL_ABI, functionName: 'decimals' }).catch(() => 18),
+        ])
+
+        const s0         = slot0Raw as { sqrtPriceX96: bigint; tick: number; unlocked: boolean } | null
+        const sqrtPrice  = s0?.sqrtPriceX96 ?? 0n
+        const liquidity  = liquidityRaw as bigint
+
+        let markPrice = 0
+        if (sqrtPrice > 0n) {
+          const p = Number(sqrtPrice) / 2 ** 96
+          const rawPrice = p * p
+          const dec0n = Number(dec0)
+          const dec1n = Number(dec1)
+          markPrice = rawPrice * (10 ** dec0n) / (10 ** dec1n)
+        }
+
+        markets.push({
+          protocol:      'monday',
+          perpId:        0,
+          asset:         `${sym0}/${sym1}`,
+          markPrice,
+          oraclePrice:   markPrice,
+          longOI:        0,
+          shortOI:       0,
+          totalOI:       Number(liquidity) / 1e18,
+          fundingRatePct:  0,
+          fundingInterval: 0,
+          tvlUSD:        0,
+          maxBid:        0,
+          minBid:        0,
+          sentiment:     'neutral',
+        })
+      })
+    )
+
+    return markets
+  } catch {
+    return []
+  }
 }
 
 /**
@@ -227,8 +346,9 @@ export async function getPerplTVL(): Promise<number> {
   try {
     const info = await publicClient.readContract({
       address: PERPL_EXCHANGE, abi: EXCHANGE_INFO_ABI, functionName: 'getExchangeInfo',
-    }) as { balanceCNS: bigint }
-    return Number(info.balanceCNS) / 1e6
+    }) as { balanceCNS: bigint; collateralDecimals: bigint }
+    const scale = 10 ** Number(info.collateralDecimals)
+    return Number(info.balanceCNS) / scale
   } catch {
     return 0
   }
@@ -250,11 +370,11 @@ export async function getPerplTVL(): Promise<number> {
 export async function getPerpVaultStats(): Promise<PerpVaultStats[]> {
   try {
     const [info, markets, accounts] = await Promise.all([
-      publicClient.readContract({ address: PERPL_EXCHANGE, abi: EXCHANGE_INFO_ABI, functionName: 'getExchangeInfo' }) as Promise<{ balanceCNS: bigint }>,
+      publicClient.readContract({ address: PERPL_EXCHANGE, abi: EXCHANGE_INFO_ABI, functionName: 'getExchangeInfo' }) as Promise<{ balanceCNS: bigint; collateralDecimals: bigint }>,
       getPerplMarkets(),
       publicClient.readContract({ address: PERPL_EXCHANGE, abi: MISC_ABI, functionName: 'numberOfAccounts' }).catch(() => 0n),
     ])
-    const tvl     = Number(info.balanceCNS) / 1e6
+    const tvl     = Number(info.balanceCNS) / (10 ** Number(info.collateralDecimals))
     const totalOI = markets.reduce((s, m) => s + m.tvlUSD, 0)
     return [{
       protocol:        'perpl',

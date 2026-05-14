@@ -19,6 +19,7 @@
 // ============================================================
 
 import { publicClient } from '../chain'
+import { getVerifiedPrice } from './oracles'
 
 export const LAGOON_ADDRESSES = {
   ProtocolRegistry: '0xBf994c358f939011595AB4216AC005147863f9D6' as `0x${string}`,
@@ -42,12 +43,13 @@ const VAULT_FACTORY_ABI = [
 
 // ERC-7540 / ERC-4626 vault interface
 const VAULT_ABI = [
-  { name: 'totalAssets', type: 'function' as const, inputs: [], outputs: [{ type: 'uint256' }], stateMutability: 'view' as const },
-  { name: 'totalSupply', type: 'function' as const, inputs: [], outputs: [{ type: 'uint256' }], stateMutability: 'view' as const },
-  { name: 'asset',       type: 'function' as const, inputs: [], outputs: [{ type: 'address' }], stateMutability: 'view' as const },
-  { name: 'name',        type: 'function' as const, inputs: [], outputs: [{ type: 'string' }],  stateMutability: 'view' as const },
-  { name: 'symbol',      type: 'function' as const, inputs: [], outputs: [{ type: 'string' }],  stateMutability: 'view' as const },
-  { name: 'decimals',    type: 'function' as const, inputs: [], outputs: [{ type: 'uint8' }],   stateMutability: 'view' as const },
+  { name: 'totalAssets',     type: 'function' as const, inputs: [], outputs: [{ type: 'uint256' }], stateMutability: 'view' as const },
+  { name: 'totalSupply',     type: 'function' as const, inputs: [], outputs: [{ type: 'uint256' }], stateMutability: 'view' as const },
+  { name: 'asset',           type: 'function' as const, inputs: [], outputs: [{ type: 'address' }], stateMutability: 'view' as const },
+  { name: 'name',            type: 'function' as const, inputs: [], outputs: [{ type: 'string' }],  stateMutability: 'view' as const },
+  { name: 'symbol',          type: 'function' as const, inputs: [], outputs: [{ type: 'string' }],  stateMutability: 'view' as const },
+  { name: 'decimals',        type: 'function' as const, inputs: [], outputs: [{ type: 'uint8' }],   stateMutability: 'view' as const },
+  { name: 'convertToAssets', type: 'function' as const, inputs: [{ name: 'shares', type: 'uint256' }], outputs: [{ type: 'uint256' }], stateMutability: 'view' as const },
 ] as const
 
 const ERC20_ABI = [
@@ -64,6 +66,7 @@ export interface LagoonVault {
   totalAssets:  number
   totalSupply:  number
   tvlUSD:       number
+  apy:          number
   protocol:     'lagoon'
 }
 
@@ -127,36 +130,50 @@ export async function getLagoonVaults(maxVaults = 30): Promise<LagoonVault[]> {
 
   if (vaultAddresses.length === 0) return []
 
+  const blockNow = await publicClient.getBlockNumber().catch(() => 0n)
+  const APY_DELTA = 72_000n
+
   const results = await Promise.allSettled(
     vaultAddresses.map(async (addr) => {
-      const [totalAssetsRaw, totalSupplyRaw, assetAddr, nameVal, symbolVal, decimalsVal] = await Promise.allSettled([
+      const [totalAssetsRaw, totalSupplyRaw, assetAddrRaw, nameVal, symbolVal, decimalsVal, rateNow, ratePast] = await Promise.allSettled([
         publicClient.readContract({ address: addr, abi: VAULT_ABI, functionName: 'totalAssets' }),
         publicClient.readContract({ address: addr, abi: VAULT_ABI, functionName: 'totalSupply' }),
         publicClient.readContract({ address: addr, abi: VAULT_ABI, functionName: 'asset' }),
         publicClient.readContract({ address: addr, abi: VAULT_ABI, functionName: 'name' }),
         publicClient.readContract({ address: addr, abi: VAULT_ABI, functionName: 'symbol' }),
         publicClient.readContract({ address: addr, abi: VAULT_ABI, functionName: 'decimals' }),
+        publicClient.readContract({ address: addr, abi: VAULT_ABI, functionName: 'convertToAssets', args: [1_000_000_000_000_000_000n] }),
+        publicClient.readContract({ address: addr, abi: VAULT_ABI, functionName: 'convertToAssets', args: [1_000_000_000_000_000_000n], blockNumber: blockNow > APY_DELTA ? blockNow - APY_DELTA : 1n }),
       ])
 
-      const decimals   = decimalsVal.status === 'fulfilled' ? Number(decimalsVal.value as number) : 18
-      const divisor    = 10 ** decimals
-      const totalAssets = totalAssetsRaw.status === 'fulfilled' ? Number(totalAssetsRaw.value as bigint) / divisor : 0
-      const totalSupply = totalSupplyRaw.status === 'fulfilled' ? Number(totalSupplyRaw.value as bigint) / divisor : 0
-      const asset       = assetAddr.status      === 'fulfilled' ? (assetAddr.value as string) : ''
-      const name        = nameVal.status         === 'fulfilled' ? (nameVal.value as string)   : addr.slice(0, 10)
+      const decimals    = decimalsVal.status    === 'fulfilled' ? Number(decimalsVal.value as number) : 18
+      const divisor     = 10n ** BigInt(decimals)
+      const totalAssets = totalAssetsRaw.status === 'fulfilled' ? Number((totalAssetsRaw.value as bigint) * 1_000_000n / divisor) / 1_000_000 : 0
+      const totalSupply = totalSupplyRaw.status === 'fulfilled' ? Number((totalSupplyRaw.value as bigint) * 1_000_000n / divisor) / 1_000_000 : 0
+      const asset       = assetAddrRaw.status   === 'fulfilled' ? (assetAddrRaw.value as string) : ''
+      const name        = nameVal.status         === 'fulfilled' ? (nameVal.value as string) : addr.slice(0, 10)
       const symbol      = symbolVal.status       === 'fulfilled' ? (symbolVal.value as string) : '?'
 
-      // Best-effort asset symbol lookup
-      let assetSymbol = 'USDC'
+      let assetSymbol = ''
       if (asset) {
         const asym = await publicClient.readContract({ address: asset as `0x${string}`, abi: ERC20_ABI, functionName: 'symbol' }).catch(() => null)
         if (asym) assetSymbol = asym as string
       }
 
-      // Assume stablecoin TVL for now (1:1 USD)
+      const assetPrice = assetSymbol
+        ? await getVerifiedPrice(assetSymbol).then(p => p.bestPrice).catch(() => 1)
+        : 1
+      const tvlUSD = totalAssets * assetPrice
+
+      const r0 = rateNow.status  === 'fulfilled' ? Number(rateNow.value  as bigint) / 1e18 : 0
+      const r1 = ratePast.status === 'fulfilled' ? Number(ratePast.value as bigint) / 1e18 : 0
+      const blocksPerYear = (365 * 24 * 3600 * 1000) / 400
+      const periodBlocks  = Number(APY_DELTA)
+      const apy = (r1 > 0 && r0 > 0) ? ((r0 - r1) / r1) * (blocksPerYear / periodBlocks) : 0
+
       return {
         address: addr, name, symbol, asset, assetSymbol,
-        totalAssets, totalSupply, tvlUSD: totalAssets,
+        totalAssets, totalSupply, tvlUSD, apy,
         protocol: 'lagoon' as const,
       } satisfies LagoonVault
     })

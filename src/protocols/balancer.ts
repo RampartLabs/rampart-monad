@@ -23,36 +23,86 @@ const MONAD_CHAIN    = 'MONAD'
 const WEIGHTED_FACTORY = '0x4bdCc2fb18AEb9e2d281b0278D946445070EAda7' as `0x${string}`
 const STABLE_FACTORY   = '0xf5CDdF6feD9C589f1Be04899F48f9738531daD59' as `0x${string}`
 
-// BasePoolFactory ABI — for supplementary on-chain reads
 const POOL_ABI = [
   { name: 'getSwapFeePercentage', type: 'function' as const, inputs: [], outputs: [{ type: 'uint256'   }], stateMutability: 'view' as const },
   { name: 'getNormalizedWeights', type: 'function' as const, inputs: [], outputs: [{ type: 'uint256[]' }], stateMutability: 'view' as const },
 ] as const
 
 export interface BalancerPool {
-  address:   string
-  type:      'weighted' | 'stable' | 'unknown'
-  tokens:    string[]
-  balances:  number[]
-  swapFee:   number
-  weights:   number[]
-  tvlUSD:    number
-  protocol:  'balancer'
+  address:      string
+  type:         'weighted' | 'stable' | 'boosted' | 'gyroscope' | 'lbp' | 'reclmm' | 'unknown'
+  tokens:       string[]
+  balances:     number[]
+  swapFee:      number
+  weights:      number[]
+  tvlUSD:       number
+  volume24h:    number
+  fees24h:      number
+  totalShares:  number
+  holdersCount: number
+  totalApr:     number
+  swapFeeApr:   number
+  stakingApr:   number
+  protocolApr:  number
+  protocol:     'balancer'
+}
+
+interface AprItem {
+  apr:   number | string
+  title: string
+  type:  string
 }
 
 interface ApiPool {
   address:     string
   name:        string
   type:        string
-  dynamicData: { swapFee?: string; totalLiquidity?: string }
+  dynamicData: {
+    totalShares?:    string
+    swapFee?:        string
+    totalLiquidity?: string
+    volume24h?:      string
+    fees24h?:        string
+    holdersCount?:   number
+    aprItems?:       AprItem[]
+  }
   poolTokens:  { address: string; symbol: string; decimals: number; balance: string }[]
 }
 
-function normalizeType(apiType: string): 'weighted' | 'stable' | 'unknown' {
+function normalizeType(apiType: string): BalancerPool['type'] {
   const t = apiType?.toLowerCase() ?? ''
-  if (t.includes('weighted')) return 'weighted'
-  if (t.includes('stable') || t.includes('surge'))  return 'stable'
+  if (t.includes('weighted'))                    return 'weighted'
+  if (t.includes('stable') || t.includes('surge')) return 'stable'
+  if (t.includes('boosted'))                     return 'boosted'
+  if (t.includes('gyro'))                        return 'gyroscope'
+  if (t.includes('lbp'))                         return 'lbp'
+  if (t.includes('reclmm') || t.includes('reclam')) return 'reclmm'
   return 'unknown'
+}
+
+function parseAprItems(items: AprItem[] | undefined): Pick<BalancerPool, 'totalApr' | 'swapFeeApr' | 'stakingApr' | 'protocolApr'> {
+  if (!items || items.length === 0) {
+    return { totalApr: 0, swapFeeApr: 0, stakingApr: 0, protocolApr: 0 }
+  }
+  let swapFeeApr = 0
+  let stakingApr = 0
+  let protocolApr = 0
+  for (const item of items) {
+    const apr = typeof item.apr === 'string' ? parseFloat(item.apr) : (item.apr ?? 0)
+    const type = (item.type ?? '').toLowerCase()
+    const title = (item.title ?? '').toLowerCase()
+    if (type === 'swap_fee' || title.includes('swap fee')) {
+      swapFeeApr += apr
+    } else if (type === 'staking' || title.includes('staking') || title.includes('reward')) {
+      stakingApr += apr
+    } else if (type === 'protocol' || title.includes('protocol') || title.includes('bal ')) {
+      protocolApr += apr
+    } else {
+      swapFeeApr += apr
+    }
+  }
+  const totalApr = swapFeeApr + stakingApr + protocolApr
+  return { totalApr, swapFeeApr, stakingApr, protocolApr }
 }
 
 async function fetchPoolsFromApi(maxPools: number): Promise<ApiPool[]> {
@@ -61,8 +111,15 @@ async function fetchPoolsFromApi(maxPools: number): Promise<ApiPool[]> {
       address
       name
       type
-      dynamicData { swapFee totalLiquidity }
-      poolTokens   { address symbol decimals balance }
+      dynamicData {
+        swapFee
+        totalLiquidity
+        volume24h
+        fees24h
+        holdersCount
+        aprItems { apr title type }
+      }
+      poolTokens { address symbol decimals balance }
     }
   }`
   try {
@@ -83,8 +140,8 @@ async function fetchPoolsFromApi(maxPools: number): Promise<ApiPool[]> {
  * Discovers and returns all Balancer V3 pools on Monad, sorted by TVL.
  *
  * Data is sourced from the Balancer REST API, which indexes all factories and
- * pool types (Weighted, Stable, Surge/StableSurge, reCLAMM, Boosted) and
- * provides USD-denominated TVL directly — no on-chain getLogs or Vault calls needed.
+ * pool types (Weighted, Stable, Surge/StableSurge, reCLAMM, Boosted, Gyroscope, LBP)
+ * and provides USD-denominated TVL, volume, fees, and APR directly.
  *
  * @param maxPools - Maximum number of pools to return (default 100)
  * @returns Array of {@link BalancerPool} sorted descending by `tvlUSD`
@@ -92,7 +149,7 @@ async function fetchPoolsFromApi(maxPools: number): Promise<ApiPool[]> {
  * @example
  * ```typescript
  * const pools = await getBalancerPools()
- * // → [{ type: 'stable', tokens: ['wnAUSD', 'wnUSDC', 'wnUSDT0'], tvlUSD: 8317224 }]
+ * // → [{ type: 'stable', tokens: ['wnAUSD', 'wnUSDC', 'wnUSDT0'], tvlUSD: 8317224, totalApr: 0.045 }]
  * ```
  *
  * @category DEX
@@ -103,12 +160,16 @@ export async function getBalancerPools(maxPools = 100): Promise<BalancerPool[]> 
 
   const results = await Promise.allSettled(
     apiPools.map(async (p) => {
-      const tokens   = p.poolTokens.map(t => t.symbol)
-      const balances = p.poolTokens.map(t => parseFloat(t.balance ?? '0'))
-      const tvlUSD   = parseFloat(p.dynamicData?.totalLiquidity ?? '0')
-      const type     = normalizeType(p.type)
-
-      const swapFeeApi = parseFloat(p.dynamicData?.swapFee ?? '0')
+      const tokens      = p.poolTokens.map(t => t.symbol)
+      const balances    = p.poolTokens.map(t => parseFloat(t.balance ?? '0'))
+      const tvlUSD      = parseFloat(p.dynamicData?.totalLiquidity ?? '0')
+      const volume24h   = parseFloat(p.dynamicData?.volume24h ?? '0')
+      const fees24h     = parseFloat(p.dynamicData?.fees24h ?? '0')
+      const holdersCount = p.dynamicData?.holdersCount ?? 0
+      const totalShares  = parseFloat(p.dynamicData?.totalShares ?? '0')
+      const type        = normalizeType(p.type)
+      const swapFeeApi  = parseFloat(p.dynamicData?.swapFee ?? '0')
+      const aprBreakdown = parseAprItems(p.dynamicData?.aprItems)
 
       const [swapFeeRaw, weightsRaw] = await Promise.all([
         swapFeeApi === 0
@@ -124,13 +185,18 @@ export async function getBalancerPools(maxPools = 100): Promise<BalancerPool[]> 
         : swapFeeApi
 
       return {
-        address:  p.address,
+        address: p.address,
         type,
         tokens,
         balances,
         swapFee,
-        weights:  weightsRaw !== null ? (weightsRaw as bigint[]).map(w => Number(w) / 1e18) : [],
+        weights:      weightsRaw !== null ? (weightsRaw as bigint[]).map(w => Number(w) / 1e18) : [],
         tvlUSD,
+        volume24h,
+        fees24h,
+        totalShares,
+        holdersCount,
+        ...aprBreakdown,
         protocol: 'balancer' as const,
       }
     })

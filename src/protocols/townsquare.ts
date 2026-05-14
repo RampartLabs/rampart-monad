@@ -2,8 +2,8 @@
  * @module TownSquare
  * @description TownSquare — cross-chain spoke/hub lending protocol on Monad.
  * Monad acts as a spoke chain that connects to a hub for unified cross-chain
- * liquidity. The SpokeController tracks deposits, borrows, and interest rates
- * for each supported asset.
+ * liquidity. Each asset pool (IAssetHubPool) tracks deposits, borrows, and
+ * interest rates independently.
  *
  * **TVL:** ~$2M
  * **Type:** Cross-Chain Lending
@@ -16,24 +16,90 @@
 
 // ============================================================
 // Rampart SDK — TownSquare on Monad
-// Cross-chain spoke/hub lending with SpokeController and AccountController.
-// Source: github.com/monad-crypto/protocols/mainnet/townsquare.jsonc
+// Cross-chain spoke/hub lending with IAssetHubPool per asset.
+// Hub: 0x2dfdb4bf6c910b5bbbb0d07ec5f088e294628189
+// Each pool exposes getDepositData() and getVariableBorrowData()
+// for live borrow/deposit totals and per-second interest rates.
+// Source: github.com/townesquare/TownSqVault (IAssetHubPool interface)
 // ============================================================
 
 import { publicClient } from '../chain'
 import { getVerifiedPrice } from './oracles'
 
 export const TOWNSQUARE_ADDRESSES = {
-  Hub:      '0x2dfdb4bf6c910b5bbbb0d07ec5f088e294628189' as `0x${string}`,
-  MONPool:  '0x106d0e2bff74b39d09636bdcd5d4189f24d91433' as `0x${string}`,
-  USDCPool: '0xdb4e67f878289a820046f46f6304fd6ee1449281' as `0x${string}`,
+  Hub: '0x2dfdb4bf6c910b5bbbb0d07ec5f088e294628189' as `0x${string}`,
 } as const
 
+const SECONDS_PER_YEAR = 365.25 * 24 * 3600
+
+// IAssetHubPool ABIs — derived from townesquare/TownSqVault IAssetHubPool.sol
+// getDepositData returns: { optimalUtilisationRatio, totalAmount, interestRate (18 dec), interestIndex (18 dec) }
+// getVariableBorrowData returns: { vr0, vr1, vr2, totalAmount, interestRate (18 dec), interestIndex (18 dec) }
 const POOL_ABI = [
-  { name: 'totalSupply', type: 'function' as const, inputs: [], outputs: [{ type: 'uint256' }], stateMutability: 'view' as const },
-  { name: 'name',        type: 'function' as const, inputs: [], outputs: [{ type: 'string'  }], stateMutability: 'view' as const },
-  { name: 'symbol',      type: 'function' as const, inputs: [], outputs: [{ type: 'string'  }], stateMutability: 'view' as const },
-  { name: 'decimals',    type: 'function' as const, inputs: [], outputs: [{ type: 'uint8'   }], stateMutability: 'view' as const },
+  {
+    name: 'totalSupply',
+    type: 'function' as const,
+    inputs: [],
+    outputs: [{ type: 'uint256' }],
+    stateMutability: 'view' as const,
+  },
+  {
+    name: 'name',
+    type: 'function' as const,
+    inputs: [],
+    outputs: [{ type: 'string' }],
+    stateMutability: 'view' as const,
+  },
+  {
+    name: 'symbol',
+    type: 'function' as const,
+    inputs: [],
+    outputs: [{ type: 'string' }],
+    stateMutability: 'view' as const,
+  },
+  {
+    name: 'decimals',
+    type: 'function' as const,
+    inputs: [],
+    outputs: [{ type: 'uint8' }],
+    stateMutability: 'view' as const,
+  },
+  {
+    name: 'getDepositData',
+    type: 'function' as const,
+    inputs: [],
+    outputs: [
+      {
+        type: 'tuple',
+        components: [
+          { name: 'optimalUtilisationRatio', type: 'uint16'  },
+          { name: 'totalAmount',             type: 'uint256' },
+          { name: 'interestRate',            type: 'uint256' },
+          { name: 'interestIndex',           type: 'uint256' },
+        ],
+      },
+    ],
+    stateMutability: 'view' as const,
+  },
+  {
+    name: 'getVariableBorrowData',
+    type: 'function' as const,
+    inputs: [],
+    outputs: [
+      {
+        type: 'tuple',
+        components: [
+          { name: 'vr0',           type: 'uint32'  },
+          { name: 'vr1',           type: 'uint32'  },
+          { name: 'vr2',           type: 'uint32'  },
+          { name: 'totalAmount',   type: 'uint256' },
+          { name: 'interestRate',  type: 'uint256' },
+          { name: 'interestIndex', type: 'uint256' },
+        ],
+      },
+    ],
+    stateMutability: 'view' as const,
+  },
 ] as const
 
 export interface TownSquareMarket {
@@ -49,47 +115,80 @@ export interface TownSquareMarket {
   protocol:      'townsquare'
 }
 
-const POOL_CONFIG = [
-  { addr: TOWNSQUARE_ADDRESSES.MONPool,  symbol: 'MON',  decimals: 18 },
-  { addr: TOWNSQUARE_ADDRESSES.USDCPool, symbol: 'USDC', decimals: 6  },
-] as const
+// Asset pool contracts on Monad Mainnet.
+// Each entry is an IAssetHubPool contract for the given underlying asset.
+// Additional pools (USDT, USD1, AUSD, sAUSD, earnAUSD, WETH, WBTC, shMON,
+// gMON, sMON, aprMON, muBOND, AZND, loAZND) will be added once their
+// IAssetHubPool addresses are confirmed on-chain.
+const POOL_CONFIG: ReadonlyArray<{ addr: `0x${string}`; symbol: string; decimals: number }> = [
+  { addr: '0x106d0e2bff74b39d09636bdcd5d4189f24d91433', symbol: 'MON',  decimals: 18 },
+  { addr: '0xdb4e67f878289a820046f46f6304fd6ee1449281', symbol: 'USDC', decimals: 6  },
+]
 
 /**
  * Returns TownSquare cross-chain lending market stats on Monad.
  *
- * Reads `totalSupply` from each pool token (tsMON, tsUSDC) — these ERC20 tokens
- * represent deposited positions. TVL is totalSupply × price.
+ * Reads `getDepositData()` and `getVariableBorrowData()` from each
+ * IAssetHubPool contract to get real borrow and deposit totals.
+ * Interest rates (per-second, 18 decimals) are compounded to APY.
+ * Asset prices are resolved via {@link getVerifiedPrice}.
  *
  * @returns Array of {@link TownSquareMarket} for active pools.
- *
- * @example
- * ```typescript
- * const markets = await getTownSquareMarkets()
- * // → [{ asset: 'MON', totalDeposits: 1632103, tvlUSD: 50595, ... }]
- * ```
  *
  * @category Lending
  */
 export async function getTownSquareMarkets(): Promise<TownSquareMarket[]> {
-  const monPrice = await getVerifiedPrice('MON').then(r => r.bestPrice)
-
   const results = await Promise.allSettled(
     POOL_CONFIG.map(async (pool) => {
-      const [supplyRaw, nameRaw, symbolRaw] = await Promise.allSettled([
-        publicClient.readContract({ address: pool.addr, abi: POOL_ABI, functionName: 'totalSupply' }),
+      const [nameResult, symbolResult, depositResult, borrowResult] = await Promise.allSettled([
         publicClient.readContract({ address: pool.addr, abi: POOL_ABI, functionName: 'name' }),
         publicClient.readContract({ address: pool.addr, abi: POOL_ABI, functionName: 'symbol' }),
+        publicClient.readContract({ address: pool.addr, abi: POOL_ABI, functionName: 'getDepositData' }),
+        publicClient.readContract({ address: pool.addr, abi: POOL_ABI, functionName: 'getVariableBorrowData' }),
       ])
 
-      const totalDeposits = supplyRaw.status === 'fulfilled'
-        ? Number(supplyRaw.value as bigint) / (10 ** pool.decimals)
-        : 0
+      const divisor = BigInt(10 ** pool.decimals)
+
+      let totalDeposits = 0
+      let supplyAPY     = 0
+      if (depositResult.status === 'fulfilled') {
+        const dd = depositResult.value as {
+          optimalUtilisationRatio: number
+          totalAmount: bigint
+          interestRate: bigint
+          interestIndex: bigint
+        }
+        totalDeposits = Number(dd.totalAmount / divisor) + Number(dd.totalAmount % divisor) / 10 ** pool.decimals
+        const ratePerSec = Number(dd.interestRate) / 1e18
+        supplyAPY = Math.pow(1 + ratePerSec, SECONDS_PER_YEAR) - 1
+      }
+
+      let totalBorrows = 0
+      let borrowAPY    = 0
+      if (borrowResult.status === 'fulfilled') {
+        const bd = borrowResult.value as {
+          vr0: number
+          vr1: number
+          vr2: number
+          totalAmount: bigint
+          interestRate: bigint
+          interestIndex: bigint
+        }
+        totalBorrows = Number(bd.totalAmount / divisor) + Number(bd.totalAmount % divisor) / 10 ** pool.decimals
+        const ratePerSec = Number(bd.interestRate) / 1e18
+        borrowAPY = Math.pow(1 + ratePerSec, SECONDS_PER_YEAR) - 1
+      }
+
       if (totalDeposits === 0) return null
 
-      const poolName   = nameRaw.status   === 'fulfilled' ? String(nameRaw.value)   : ''
-      const poolSymbol = symbolRaw.status === 'fulfilled' ? String(symbolRaw.value) : ''
+      const poolName   = nameResult.status   === 'fulfilled' ? String(nameResult.value)   : ''
+      const poolSymbol = symbolResult.status === 'fulfilled' ? String(symbolResult.value) : ''
 
-      const priceUSD = pool.symbol === 'USDC' ? 1 : monPrice
+      let priceUSD = 0
+      try {
+        const vp = await getVerifiedPrice(pool.symbol)
+        priceUSD  = vp.bestPrice
+      } catch { /* price unavailable */ }
 
       return {
         address:       pool.addr,
@@ -97,11 +196,11 @@ export async function getTownSquareMarkets(): Promise<TownSquareMarket[]> {
         poolSymbol,
         poolName,
         totalDeposits,
-        totalBorrows:  0,
-        supplyAPY:     0,
-        borrowAPY:     0,
-        tvlUSD:        totalDeposits * priceUSD,
-        protocol:      'townsquare' as const,
+        totalBorrows,
+        supplyAPY,
+        borrowAPY,
+        tvlUSD:   totalDeposits * priceUSD,
+        protocol: 'townsquare' as const,
       }
     }),
   )
@@ -114,16 +213,7 @@ export async function getTownSquareMarkets(): Promise<TownSquareMarket[]> {
 /**
  * Returns total TownSquare deposit TVL on Monad in USD.
  *
- * Calls {@link getTownSquareMarkets} and sums `tvlUSD` (= `totalDeposits`) across
- * all returned market entries.
- *
  * @returns Total TVL as a float (USD).
- *
- * @example
- * ```typescript
- * const tvl = await getTownSquareTVL()
- * // → 2000000
- * ```
  *
  * @category Lending
  */

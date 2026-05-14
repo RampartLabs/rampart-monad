@@ -1,8 +1,8 @@
 /**
  * @module Oracles
  * @description Multi-source price oracle aggregator for Monad mainnet.
- * Queries Chainlink, Pyth, Redstone, Chronicle on-chain feeds and Kuru DEX in parallel,
- * returns median-validated prices with deviation warnings.
+ * Queries Chainlink, Pyth, Redstone, Chronicle, Band, Switchboard, eOracle on-chain feeds
+ * and Kuru DEX in parallel, returns median-validated prices with deviation warnings.
  *
  * **TVL:** N/A
  * **Type:** Price Oracle Aggregator
@@ -10,7 +10,10 @@
  *
  * Available functions:
  * - {@link getRedstonePrice} — Redstone push feed price (on-chain preferred, HTTP fallback)
- * - {@link getChroniclePrice} — Chronicle oracle price (WAD-scaled, MON/USD only)
+ * - {@link getChroniclePrice} — Chronicle oracle price (WAD-scaled)
+ * - {@link getBandPrice} — Band Protocol StdReference price
+ * - {@link getSwitchboardPrice} — Switchboard oracle feed price
+ * - {@link getEOraclePrice} — eOracle Chainlink-compatible feed price
  * - {@link getLSTRatios} — cumulative MON-per-LST exchange rates for all 4 LSTs from Redstone
  * - {@link getVerifiedPrice} — cross-validated median price from all oracle sources
  * - {@link getPrices} — batch verified prices for multiple tokens
@@ -20,7 +23,7 @@
 
 // ============================================================
 // Rampart SDK — Oracle Aggregator (Phase 2)
-// Sources: Chainlink · Pyth · Redstone · Chronicle · Kuru DEX
+// Sources: Chainlink · Pyth · Redstone · Chronicle · Band · Switchboard · eOracle · Kuru DEX
 // All feeds verified from monad-crypto/protocols + data.chain.link
 // getVerifiedPrice() cross-checks all sources, returns median
 // ============================================================
@@ -32,15 +35,18 @@ import { getTokenPrice as getKuruTokenPrice } from './kuru'
 // MON/USD note: on-chain oracles return ~$0.031; Kuru DEX returns ~$0.31 (10x delta).
 // Chainlink, Pyth, Redstone, Chronicle all agree at ~$0.031 — DEX price outlier noted in warning.
 const CHAINLINK_FEEDS: Record<string, `0x${string}`> = {
-  MON:  '0xBcD78f76005B7515837af6b50c7C52BCf73822fb',
-  WMON: '0xBcD78f76005B7515837af6b50c7C52BCf73822fb',
-  USDC: '0xf5F15f188AbCb0d165D1Edb7f37F7d6fA2fCebec',
-  USDT: '0x1a1Be4c184923a6BFF8c27cfDf6ac8bDE4DE00FC',
-  ETH:  '0x1B1414782B859871781bA3E4B0979b9ca57A0A04',
-  WETH: '0x1B1414782B859871781bA3E4B0979b9ca57A0A04',
-  BTC:  '0xc1d4C3331635184fA4C3c22fb92211B2Ac9E0546',
-  WBTC: '0xc1d4C3331635184fA4C3c22fb92211B2Ac9E0546',
-  SOL:  '0x16F8008c3e89f62e5e2b909Ce70999370D38F4F2',
+  MON:    '0xBcD78f76005B7515837af6b50c7C52BCf73822fb',
+  WMON:   '0xBcD78f76005B7515837af6b50c7C52BCf73822fb',
+  USDC:   '0xf5F15f188AbCb0d165D1Edb7f37F7d6fA2fCebec',
+  USDT:   '0x1a1Be4c184923a6BFF8c27cfDf6ac8bDE4DE00FC',
+  ETH:    '0x1B1414782B859871781bA3E4B0979b9ca57A0A04',
+  WETH:   '0x1B1414782B859871781bA3E4B0979b9ca57A0A04',
+  BTC:    '0xc1d4C3331635184fA4C3c22fb92211B2Ac9E0546',
+  WBTC:   '0xc1d4C3331635184fA4C3c22fb92211B2Ac9E0546',
+  SOL:    '0x16F8008c3e89f62e5e2b909Ce70999370D38F4F2',
+  AUSD:   '0x2B0fdd9C73c9E651e77CB96A981c08e8a19A68F9',
+  STETH:  '0xE67d6f8Cb8bDFC5eC97e4a58FeB92ea4371B4Ce4',
+  WSTETH: '0x9Fcc8B9c79A5bef8A2dD90E5D49F30F3C23EDBB2',
 }
 
 // Pyth price feed IDs (verified 2026-04-18 via hermes.pyth.network/v2/price_feeds)
@@ -81,21 +87,58 @@ const REDSTONE_LST_ONCHAIN: Record<string, `0x${string}`> = {
 
 // Redstone on-chain price feeds (Chainlink-compatible) — supplement HTTP API
 const REDSTONE_PRICE_ONCHAIN: Record<string, `0x${string}`> = {
-  MON:  '0x1C9582E87eD6E99bc23EC0e6Eb52eE9d7C0D6bcd',
-  WMON: '0x1C9582E87eD6E99bc23EC0e6Eb52eE9d7C0D6bcd',
-  ETH:  '0xc44be6D00307c3565FDf753e852Fc003036cBc13',
-  WETH: '0xc44be6D00307c3565FDf753e852Fc003036cBc13',
-  BTC:  '0xED2B1ca5D7E246f615c2291De309643D41FeC97e',
-  USDC: '0x7A9b672fc20b5C89D6774514052b3e0899E5E263',
+  MON:    '0x1C9582E87eD6E99bc23EC0e6Eb52eE9d7C0D6bcd',
+  WMON:   '0x1C9582E87eD6E99bc23EC0e6Eb52eE9d7C0D6bcd',
+  ETH:    '0xc44be6D00307c3565FDf753e852Fc003036cBc13',
+  WETH:   '0xc44be6D00307c3565FDf753e852Fc003036cBc13',
+  BTC:    '0xED2B1ca5D7E246f615c2291De309643D41FeC97e',
+  USDC:   '0x7A9b672fc20b5C89D6774514052b3e0899E5E263',
+  USDT:   '0x90196F6D52fce394C79D1614265d36D3F0033Ccf',
+  WBTC:   '0x98ECE0D516f891a35278E3186772fb1545b274eB',
+  AUSD:   '0xFFD1339908E0deBE2416E03df0843B896b8944Fe',
+  APR:    '0xB144836c17C5d613Aa471f0BB9B79B55288c2C03',
+  muBOND: '0x336D414754967C6682B5A665C7DAF6F1409E63e8',
+  AZND:   '0x4917a5ec9fCb5e10f47CBB197aBe6aB63be81fE8',
 }
 
-// Chronicle MON/USD feed — verified on Monad mainnet
+// Chronicle feeds — verified from monad-crypto/protocols/mainnet/chronicle.jsonc
 // tryRead() returns (bool ok, uint256 val) where val is WAD-scaled (18 decimals)
 const CHRONICLE_MON_FEED: `0x${string}` = '0x936a444C983347FFBfe3F26D1497CAbfA2BfE271'
 const CHRONICLE_FEEDS: Record<string, `0x${string}`> = {
-  MON:  CHRONICLE_MON_FEED,
-  WMON: CHRONICLE_MON_FEED,
+  MON:    CHRONICLE_MON_FEED,
+  WMON:   CHRONICLE_MON_FEED,
+  ETH:    '0xa7f041Fb6AfFb962162Ff3f318cA184299e4eC58',
+  WETH:   '0xD4920c3Eba8c0E4824afe7B3737fACD7C1022234',
+  BTC:    '0xECd09Ce60c069384D6B91656A841097F1181A59e',
+  WBTC:   '0xf8689D8A90cDB562ea2B83cecE80c8a551a931C6',
+  USDC:   '0x8F9ad9205B442ACC5105Aac1F1efe5f09B194e1d',
+  USDT:   '0x83D794F01A3eDBdD92ae2f2EcC8e56b41eD7777c',
+  STETH:  '0xd52C49Ea370cDaa0E5912A98B3AAf3375768E49B',
+  WSTETH: '0x418541FFD62bDB3078fb669cB9c18D45942d9C3d',
 }
+
+// Band Protocol StdReference on Monad mainnet — verified from blog.bandprotocol.com/band-goes-live-on-monad
+// getReferenceData(base, quote) → { rate: uint256 (1e18-scaled), lastUpdatedBase, lastUpdatedQuote }
+const BAND_CONTRACT: `0x${string}` = '0x9c5490fc68005dF8b2DC124309c2C036B93d785f'
+const BAND_FEEDS: Record<string, string> = {
+  ETH:  'ETH',
+  WETH: 'ETH',
+  BTC:  'BTC',
+  WBTC: 'BTC',
+  USDC: 'USDC',
+  USDT: 'USDT',
+  SOL:  'SOL',
+}
+
+// Switchboard oracle on Monad mainnet — verified from monad-crypto/protocols/mainnet/switchboard.jsonc
+// latestUpdate(feedId) → { result: int128, timestamp: uint64, slotNumber: uint64 }
+// result is 18-decimal fixed-point
+const SWITCHBOARD_CONTRACT: `0x${string}` = '0xB7F03eee7B9F56347e32cC71DaD65B303D5a0E67'
+const SWITCHBOARD_FEEDS: Record<string, `0x${string}`> = {}
+
+// eOracle — Chainlink-compatible latestRoundData() interface
+// Feed addresses populated as they become publicly verified on Monad mainnet
+const EORACLE_FEEDS: Record<string, `0x${string}`> = {}
 
 // ─── ABIs ────────────────────────────────────────────────────────────────────
 
@@ -155,6 +198,43 @@ const CHRONICLE_ABI = [
   },
 ] as const
 
+const BAND_ABI = [
+  {
+    name: 'getReferenceData',
+    type: 'function' as const,
+    inputs: [
+      { name: 'base',  type: 'string' },
+      { name: 'quote', type: 'string' },
+    ],
+    outputs: [{
+      type: 'tuple',
+      components: [
+        { name: 'rate',            type: 'uint256' },
+        { name: 'lastUpdatedBase', type: 'uint256' },
+        { name: 'lastUpdatedQuote', type: 'uint256' },
+      ],
+    }],
+    stateMutability: 'view' as const,
+  },
+] as const
+
+const SWITCHBOARD_ABI = [
+  {
+    name: 'latestUpdate',
+    type: 'function' as const,
+    inputs: [{ name: 'feedId', type: 'bytes32' }],
+    outputs: [{
+      type: 'tuple',
+      components: [
+        { name: 'result',     type: 'int128' },
+        { name: 'timestamp',  type: 'uint64' },
+        { name: 'slotNumber', type: 'uint64' },
+      ],
+    }],
+    stateMutability: 'view' as const,
+  },
+] as const
+
 // Chainlink-compatible ABI used by Redstone on-chain push feeds
 const LATEST_ANSWER_ABI = [
   {
@@ -178,10 +258,10 @@ const LATEST_ANSWER_ABI = [
 export interface OraclePrice {
   token:     string
   price:     number        // USD price
-  source:    'chainlink' | 'pyth' | 'redstone' | 'chronicle' | 'kuru-dex'
+  source:    'chainlink' | 'pyth' | 'redstone' | 'chronicle' | 'band' | 'switchboard' | 'eoracle' | 'kuru-dex'
   updatedAt: number        // unix timestamp
   confidence?: number      // Pyth confidence interval
-  stale?:    boolean       // if updatedAt > 10 min ago
+  stale?:    boolean
 }
 
 export interface VerifiedPrice {
@@ -208,7 +288,7 @@ export interface LSTRatios {
 
 // ─── Source fetchers ─────────────────────────────────────────────────────────
 
-async function getChainlinkPrice(token: string): Promise<OraclePrice | null> {
+async function getChainlinkPrice(token: string, staleThresholdSeconds = 3600): Promise<OraclePrice | null> {
   const feed = CHAINLINK_FEEDS[token.toUpperCase()]
   if (!feed) return null
   try {
@@ -220,7 +300,7 @@ async function getChainlinkPrice(token: string): Promise<OraclePrice | null> {
     const dec   = Number(decimals)
     const price = Number(answer) / 10 ** dec
     const now   = Math.floor(Date.now() / 1000)
-    const stale = now - Number(updatedAt) > 600
+    const stale = now - Number(updatedAt) > staleThresholdSeconds
     if (price <= 0) return null
     return { token, price, source: 'chainlink', updatedAt: Number(updatedAt), stale }
   } catch {
@@ -228,7 +308,7 @@ async function getChainlinkPrice(token: string): Promise<OraclePrice | null> {
   }
 }
 
-async function getPythPrice(token: string): Promise<OraclePrice | null> {
+async function getPythPrice(token: string, staleThresholdSeconds = 600): Promise<OraclePrice | null> {
   const feedId = PYTH_FEED_IDS[token.toUpperCase()]
   if (!feedId) return null
   try {
@@ -245,7 +325,7 @@ async function getPythPrice(token: string): Promise<OraclePrice | null> {
     const price      = Number(rawPrice) / 10 ** absExpo
     const confidence = Number(conf)    / 10 ** absExpo
     const now        = Math.floor(Date.now() / 1000)
-    const stale      = now - Number(publishTime) > 600
+    const stale      = now - Number(publishTime) > staleThresholdSeconds
     if (price <= 0) return null
     return { token, price, source: 'pyth', updatedAt: Number(publishTime), confidence, stale }
   } catch {
@@ -304,6 +384,7 @@ export async function getRedstonePrice(token: string): Promise<OraclePrice | nul
     const updatedAt = Math.floor((pkg.timestampMilliseconds ?? Date.now()) / 1000)
     const stale     = Math.floor(Date.now() / 1000) - updatedAt > 600
     return { token, price, source: 'redstone', updatedAt, stale }
+
   } catch {
     return null
   }
@@ -351,6 +432,98 @@ async function getKuruDexPrice(token: string): Promise<OraclePrice | null> {
     const result = await getKuruTokenPrice('MON', 'USDC')
     if (result.price <= 0) return null
     return { token, price: result.price, source: 'kuru-dex', updatedAt: Math.floor(Date.now() / 1000) }
+  } catch {
+    return null
+  }
+}
+
+/**
+ * Fetch price from Band Protocol StdReference on Monad mainnet.
+ * Supports: ETH, WETH, BTC, WBTC, USDC, USDT, SOL.
+ * rate is 1e18-scaled uint256.
+ *
+ * @param token - Token symbol
+ * @returns OraclePrice with source "band", or null if no feed or read fails
+ *
+ * @category Oracles
+ */
+export async function getBandPrice(token: string, staleThresholdSeconds = 600): Promise<OraclePrice | null> {
+  const base = BAND_FEEDS[token.toUpperCase()]
+  if (!base) return null
+  try {
+    const result = await publicClient.readContract({
+      address: BAND_CONTRACT,
+      abi: BAND_ABI,
+      functionName: 'getReferenceData',
+      args: [base, 'USD'],
+    })
+    const { rate, lastUpdatedBase } = result as { rate: bigint; lastUpdatedBase: bigint; lastUpdatedQuote: bigint }
+    const price     = Number(rate) / 1e18
+    const updatedAt = Number(lastUpdatedBase)
+    const now       = Math.floor(Date.now() / 1000)
+    const stale     = now - updatedAt > staleThresholdSeconds
+    if (price <= 0) return null
+    return { token, price, source: 'band', updatedAt, stale }
+  } catch {
+    return null
+  }
+}
+
+/**
+ * Fetch price from a Switchboard feed on Monad mainnet.
+ * latestUpdate(feedId) → { result: int128 (18-decimal fixed-point), timestamp: uint64 }
+ *
+ * @param feedAddress - bytes32 feed ID (as hex string)
+ * @param token       - Token symbol for the returned OraclePrice
+ * @returns OraclePrice with source "switchboard", or null if read fails
+ *
+ * @category Oracles
+ */
+export async function getSwitchboardPrice(feedAddress: `0x${string}`, token: string, staleThresholdSeconds = 600): Promise<OraclePrice | null> {
+  try {
+    const result = await publicClient.readContract({
+      address: SWITCHBOARD_CONTRACT,
+      abi: SWITCHBOARD_ABI,
+      functionName: 'latestUpdate',
+      args: [feedAddress],
+    })
+    const { result: raw, timestamp } = result as { result: bigint; timestamp: bigint; slotNumber: bigint }
+    const price     = Number(raw) / 1e18
+    const updatedAt = Number(timestamp)
+    const now       = Math.floor(Date.now() / 1000)
+    const stale     = now - updatedAt > staleThresholdSeconds
+    if (price <= 0) return null
+    return { token, price, source: 'switchboard', updatedAt, stale }
+  } catch {
+    return null
+  }
+}
+
+/**
+ * Fetch price from eOracle Chainlink-compatible feed on Monad mainnet.
+ * Uses standard latestRoundData() / decimals() interface.
+ *
+ * @param token - Token symbol
+ * @param staleThresholdSeconds - Staleness cutoff in seconds (default: 3600)
+ * @returns OraclePrice with source "eoracle", or null if no feed configured or read fails
+ *
+ * @category Oracles
+ */
+export async function getEOraclePrice(token: string, staleThresholdSeconds = 3600): Promise<OraclePrice | null> {
+  const feed = EORACLE_FEEDS[token.toUpperCase()]
+  if (!feed) return null
+  try {
+    const [roundData, decimals] = await Promise.all([
+      publicClient.readContract({ address: feed, abi: CHAINLINK_ABI, functionName: 'latestRoundData' }),
+      publicClient.readContract({ address: feed, abi: CHAINLINK_ABI, functionName: 'decimals' }),
+    ])
+    const [, answer, , updatedAt] = roundData as [bigint, bigint, bigint, bigint, bigint]
+    const dec   = Number(decimals)
+    const price = Number(answer) / 10 ** dec
+    const now   = Math.floor(Date.now() / 1000)
+    const stale = now - Number(updatedAt) > staleThresholdSeconds
+    if (price <= 0) return null
+    return { token, price, source: 'eoracle', updatedAt: Number(updatedAt), stale }
   } catch {
     return null
   }
@@ -425,15 +598,21 @@ function median(values: number[]): number {
  * @category Oracles
  */
 export async function getVerifiedPrice(token: string): Promise<VerifiedPrice> {
-  const [cl, pyth, rs, chron, dex] = await Promise.all([
+  const upper = token.toUpperCase()
+  const switchboardFeedId = SWITCHBOARD_FEEDS[upper]
+
+  const [cl, pyth, rs, chron, band, sw, eo, dex] = await Promise.all([
     getChainlinkPrice(token),
     getPythPrice(token),
     getRedstonePrice(token),
     getChroniclePrice(token),
+    getBandPrice(token),
+    switchboardFeedId ? getSwitchboardPrice(switchboardFeedId, token) : Promise.resolve(null),
+    getEOraclePrice(token),
     getKuruDexPrice(token),
   ])
 
-  const sources = [cl, pyth, rs, chron, dex].filter((s): s is OraclePrice => s !== null && s.price > 0)
+  const sources = [cl, pyth, rs, chron, band, sw, eo, dex].filter((s): s is OraclePrice => s !== null && s.price > 0)
 
   if (sources.length === 0) {
     throw new Error(`No oracle data available for ${token}`)
@@ -538,29 +717,38 @@ export async function getChainlinkRawPrice(token: string): Promise<OraclePrice |
  * @category Oracles
  */
 export async function detectOracleDiscrepancy(token: string): Promise<{
-  token:           string
-  chainlinkPrice:  number | null
-  pythPrice:       number | null
-  redstonePrice:   number | null
-  chroniclePrice:  number | null
-  dexPrice:        number | null
-  maxDeviation:    number
-  isDiscrepant:    boolean
+  token:            string
+  chainlinkPrice:   number | null
+  pythPrice:        number | null
+  redstonePrice:    number | null
+  chroniclePrice:   number | null
+  bandPrice:        number | null
+  switchboardPrice: number | null
+  eoraclePrice:     number | null
+  dexPrice:         number | null
+  maxDeviation:     number
+  isDiscrepant:     boolean
 }> {
   const verified = await getVerifiedPrice(token)
-  const cl    = verified.sources.find(s => s.source === 'chainlink')?.price  ?? null
-  const py    = verified.sources.find(s => s.source === 'pyth')?.price       ?? null
-  const rs    = verified.sources.find(s => s.source === 'redstone')?.price   ?? null
-  const ch    = verified.sources.find(s => s.source === 'chronicle')?.price  ?? null
-  const dex   = verified.sources.find(s => s.source === 'kuru-dex')?.price   ?? null
+  const cl  = verified.sources.find(s => s.source === 'chainlink')?.price    ?? null
+  const py  = verified.sources.find(s => s.source === 'pyth')?.price         ?? null
+  const rs  = verified.sources.find(s => s.source === 'redstone')?.price     ?? null
+  const ch  = verified.sources.find(s => s.source === 'chronicle')?.price    ?? null
+  const bd  = verified.sources.find(s => s.source === 'band')?.price         ?? null
+  const sw  = verified.sources.find(s => s.source === 'switchboard')?.price  ?? null
+  const eo  = verified.sources.find(s => s.source === 'eoracle')?.price      ?? null
+  const dex = verified.sources.find(s => s.source === 'kuru-dex')?.price     ?? null
   return {
     token,
-    chainlinkPrice:  cl,
-    pythPrice:       py,
-    redstonePrice:   rs,
-    chroniclePrice:  ch,
-    dexPrice:        dex,
-    maxDeviation:    verified.deviation,
-    isDiscrepant:    verified.deviation > 5,
+    chainlinkPrice:   cl,
+    pythPrice:        py,
+    redstonePrice:    rs,
+    chroniclePrice:   ch,
+    bandPrice:        bd,
+    switchboardPrice: sw,
+    eoraclePrice:     eo,
+    dexPrice:         dex,
+    maxDeviation:     verified.deviation,
+    isDiscrepant:     verified.deviation > 5,
   }
 }

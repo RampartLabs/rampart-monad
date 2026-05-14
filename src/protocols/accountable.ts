@@ -20,6 +20,7 @@
 // ============================================================
 
 import { publicClient } from '../chain'
+import { getVerifiedPrice } from './oracles'
 
 export const ACCOUNTABLE_ADDRESSES = {
   FeeManager:         '0x4DE9B4d7b70d1680cD8E3A2C60717cBbe6014991' as `0x${string}`,
@@ -47,11 +48,15 @@ const FACTORY_ABI = [
 ] as const
 
 const VAULT_ABI = [
-  { name: 'totalAssets',     type: 'function' as const, inputs: [], outputs: [{ type: 'uint256' }], stateMutability: 'view' as const },
-  { name: 'totalSupply',     type: 'function' as const, inputs: [], outputs: [{ type: 'uint256' }], stateMutability: 'view' as const },
-  { name: 'asset',           type: 'function' as const, inputs: [], outputs: [{ type: 'address' }], stateMutability: 'view' as const },
-  { name: 'name',            type: 'function' as const, inputs: [], outputs: [{ type: 'string' }],  stateMutability: 'view' as const },
+  { name: 'totalAssets',            type: 'function' as const, inputs: [], outputs: [{ type: 'uint256' }], stateMutability: 'view' as const },
+  { name: 'totalSupply',            type: 'function' as const, inputs: [], outputs: [{ type: 'uint256' }], stateMutability: 'view' as const },
+  { name: 'asset',                  type: 'function' as const, inputs: [], outputs: [{ type: 'address' }], stateMutability: 'view' as const },
+  { name: 'name',                   type: 'function' as const, inputs: [], outputs: [{ type: 'string' }],  stateMutability: 'view' as const },
   { name: 'totalPendingRedemptions', type: 'function' as const, inputs: [], outputs: [{ type: 'uint256' }], stateMutability: 'view' as const },
+  { name: 'maturity',               type: 'function' as const, inputs: [], outputs: [{ type: 'uint256' }], stateMutability: 'view' as const },
+  { name: 'endTime',                type: 'function' as const, inputs: [], outputs: [{ type: 'uint256' }], stateMutability: 'view' as const },
+  { name: 'interestRate',           type: 'function' as const, inputs: [], outputs: [{ type: 'uint256' }], stateMutability: 'view' as const },
+  { name: 'convertToAssets',        type: 'function' as const, inputs: [{ name: 'shares', type: 'uint256' }], outputs: [{ type: 'uint256' }], stateMutability: 'view' as const },
 ] as const
 
 const ERC20_ABI = [
@@ -60,16 +65,18 @@ const ERC20_ABI = [
 ] as const
 
 export interface AccountableVault {
-  address:                string
-  name:                   string
-  asset:                  string
-  assetSymbol:            string
-  totalAssets:            number
-  totalSupply:            number
-  totalPendingRedemptions: number  // ERC-7540: assets queued for withdrawal
-  tvlUSD:                 number
-  vaultType:              'fixed-term' | 'open-term' | 'unknown'
-  protocol:               'accountable'
+  address:                 string
+  name:                    string
+  asset:                   string
+  assetSymbol:             string
+  totalAssets:             number
+  totalSupply:             number
+  totalPendingRedemptions: number
+  tvlUSD:                  number
+  apy:                     number
+  maturityDate:            number | null
+  vaultType:               'fixed-term' | 'open-term' | 'unknown'
+  protocol:                'accountable'
 }
 
 async function discoverVaultsFromFactory(
@@ -134,32 +141,67 @@ export async function getAccountableVaults(maxVaults = 20): Promise<AccountableV
 
   if (allVaults.length === 0) return []
 
+  const blockNow = await publicClient.getBlockNumber().catch(() => 0n)
+  const APY_DELTA = 72_000n
+
   const results = await Promise.allSettled(
     allVaults.map(async ({ addr, vaultType }) => {
-      const [totalAssetsRaw, totalSupplyRaw, assetAddrRaw, nameRaw, pendingRedemptionsRaw] = await Promise.allSettled([
+      const [totalAssetsRaw, totalSupplyRaw, assetAddrRaw, nameRaw, pendingRedemptionsRaw, maturityRaw, endTimeRaw, interestRateRaw, rateNow, ratePast] = await Promise.allSettled([
         publicClient.readContract({ address: addr, abi: VAULT_ABI, functionName: 'totalAssets' }),
         publicClient.readContract({ address: addr, abi: VAULT_ABI, functionName: 'totalSupply' }),
         publicClient.readContract({ address: addr, abi: VAULT_ABI, functionName: 'asset' }),
         publicClient.readContract({ address: addr, abi: VAULT_ABI, functionName: 'name' }),
         publicClient.readContract({ address: addr, abi: VAULT_ABI, functionName: 'totalPendingRedemptions' }),
+        publicClient.readContract({ address: addr, abi: VAULT_ABI, functionName: 'maturity' }),
+        publicClient.readContract({ address: addr, abi: VAULT_ABI, functionName: 'endTime' }),
+        publicClient.readContract({ address: addr, abi: VAULT_ABI, functionName: 'interestRate' }),
+        publicClient.readContract({ address: addr, abi: VAULT_ABI, functionName: 'convertToAssets', args: [1_000_000_000_000_000_000n] }),
+        publicClient.readContract({ address: addr, abi: VAULT_ABI, functionName: 'convertToAssets', args: [1_000_000_000_000_000_000n], blockNumber: blockNow > APY_DELTA ? blockNow - APY_DELTA : 1n }),
       ])
 
-      const totalAssets            = totalAssetsRaw.status      === 'fulfilled' ? Number(totalAssetsRaw.value      as bigint) / 1e6 : 0
-      const totalSupply            = totalSupplyRaw.status      === 'fulfilled' ? Number(totalSupplyRaw.value      as bigint) / 1e6 : 0
-      const totalPendingRedemptions = pendingRedemptionsRaw.status === 'fulfilled' ? Number(pendingRedemptionsRaw.value as bigint) / 1e6 : 0
-      const assetAddr              = assetAddrRaw.status        === 'fulfilled' ? (assetAddrRaw.value as string) : ''
-      const name                   = nameRaw.status             === 'fulfilled' ? (nameRaw.value as string)       : addr.slice(0, 10)
+      const assetAddr = assetAddrRaw.status === 'fulfilled' ? (assetAddrRaw.value as string) : ''
+      const name      = nameRaw.status       === 'fulfilled' ? (nameRaw.value as string)      : addr.slice(0, 10)
 
-      let assetSymbol = 'USDC'
+      let assetSymbol   = ''
+      let assetDecimals = 6
       if (assetAddr) {
-        const sym = await publicClient.readContract({ address: assetAddr as `0x${string}`, abi: ERC20_ABI, functionName: 'symbol' }).catch(() => null)
-        if (sym) assetSymbol = sym as string
+        const [sym, dec] = await Promise.allSettled([
+          publicClient.readContract({ address: assetAddr as `0x${string}`, abi: ERC20_ABI, functionName: 'symbol' }),
+          publicClient.readContract({ address: assetAddr as `0x${string}`, abi: ERC20_ABI, functionName: 'decimals' }),
+        ])
+        if (sym.status === 'fulfilled') assetSymbol   = sym.value as string
+        if (dec.status === 'fulfilled') assetDecimals = Number(dec.value as number)
       }
+
+      const divisor                 = 10n ** BigInt(assetDecimals)
+      const totalAssets             = totalAssetsRaw.status      === 'fulfilled' ? Number((totalAssetsRaw.value as bigint) * 1_000_000n / divisor) / 1_000_000 : 0
+      const totalSupply             = totalSupplyRaw.status      === 'fulfilled' ? Number((totalSupplyRaw.value as bigint) * 1_000_000n / divisor) / 1_000_000 : 0
+      const totalPendingRedemptions = pendingRedemptionsRaw.status === 'fulfilled' ? Number((pendingRedemptionsRaw.value as bigint) * 1_000_000n / divisor) / 1_000_000 : 0
+
+      const maturityDate = maturityRaw.status  === 'fulfilled' ? Number(maturityRaw.value as bigint) || null
+                         : endTimeRaw.status   === 'fulfilled' ? Number(endTimeRaw.value  as bigint) || null
+                         : null
+
+      let apy = 0
+      if (interestRateRaw.status === 'fulfilled') {
+        apy = Number(interestRateRaw.value as bigint) / 1e18
+      } else {
+        const r0 = rateNow.status  === 'fulfilled' ? Number(rateNow.value  as bigint) / 1e18 : 0
+        const r1 = ratePast.status === 'fulfilled' ? Number(ratePast.value as bigint) / 1e18 : 0
+        const blocksPerYear = (365 * 24 * 3600 * 1000) / 400
+        const periodBlocks  = Number(APY_DELTA)
+        if (r1 > 0 && r0 > 0) apy = ((r0 - r1) / r1) * (blocksPerYear / periodBlocks)
+      }
+
+      const assetPrice = assetSymbol
+        ? await getVerifiedPrice(assetSymbol).then(p => p.bestPrice).catch(() => 1)
+        : 1
+      const tvlUSD = totalAssets * assetPrice
 
       return {
         address: addr, name, asset: assetAddr, assetSymbol,
         totalAssets, totalSupply, totalPendingRedemptions,
-        tvlUSD: totalAssets, vaultType,
+        tvlUSD, apy, maturityDate, vaultType,
         protocol: 'accountable' as const,
       } satisfies AccountableVault
     })

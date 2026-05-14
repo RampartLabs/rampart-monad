@@ -15,7 +15,7 @@ describe('Balancer V3 (Phase 16)', () => {
     for (const p of pools) {
       expect(p.protocol).toBe('balancer')
       expect(p.address).toMatch(/^0x[0-9a-fA-F]{40}$/)
-      expect(['weighted', 'stable', 'unknown']).toContain(p.type)
+      expect(['weighted', 'stable', 'boosted', 'gyroscope', 'lbp', 'reclmm', 'unknown']).toContain(p.type)
       expect(Array.isArray(p.tokens)).toBe(true)
       expect(p.tokens.length).toBeGreaterThan(0)
       expect(Array.isArray(p.balances)).toBe(true)

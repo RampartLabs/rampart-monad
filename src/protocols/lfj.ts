@@ -25,6 +25,8 @@
 // ============================================================
 
 import { publicClient } from '../chain'
+import { getVerifiedPrice } from './oracles'
+import { getTokenByAddress } from './dex/tokens'
 
 const LB_FACTORY:    `0x${string}` = '0xb43120c4745967fa9b93E79C149E66B0f2D6Fe0c'
 const LB_ROUTER:     `0x${string}` = '0x18556DA13313f3532c54711497A8FedAC273220E'
@@ -156,6 +158,19 @@ const LB_QUOTER_ABI = [
   },
 ] as const
 
+const LB_HOOKS_LENS_ABI = [
+  {
+    name: 'getLBHooksOf',
+    type: 'function' as const,
+    inputs: [{ name: 'pair', type: 'address' }],
+    outputs: [
+      { name: 'hooksAddress',    type: 'address' },
+      { name: 'hooksParameters', type: 'bytes32' },
+    ],
+    stateMutability: 'view' as const,
+  },
+] as const
+
 const ERC20_ABI = [
   {
     name: 'symbol',
@@ -177,18 +192,25 @@ const ERC20_ABI = [
 
 export interface LFJPool {
   address:      string
-  tokenX:       string       // symbol of tokenX
-  tokenY:       string       // symbol of tokenY
+  tokenX:       string
+  tokenY:       string
   tokenXAddr:   string
   tokenYAddr:   string
-  binStep:      number       // bin step in bps (e.g. 25 = 0.25% price step per bin)
-  activeId:     number       // current active bin ID
-  price:        number       // tokenX price in tokenY units (from active bin)
+  binStep:      number
+  activeId:     number
+  price:        number
   reserveX:     bigint
   reserveY:     bigint
   hasLiquidity: boolean
-  baseFee:      number       // base fee in bps (e.g. 15 = 0.15%)
-  protocolShare: number      // fraction of fees going to protocol (0..1)
+  baseFee:      number
+  protocolShare: number
+  tvlUSD:       number
+}
+
+export interface LFJHooksInfo {
+  pairAddress: string
+  hooksAddress: string
+  hooksParameters: string
 }
 
 export interface LFJQuote {
@@ -286,13 +308,32 @@ export async function getLFJPools(maxPools = 50): Promise<LFJPool[]> {
 
           const [reserveX, reserveY] = reserves as unknown as [bigint, bigint]
           const fp = feeParams as any
-          const baseFee      = fp ? Number(fp.baseFactor) * Number(binStep) / 1e6 : 0  // in bps -> fraction
+          const baseFee       = fp ? Number(fp.baseFactor) * Number(binStep) / 1e6 : 0
           const protocolShare = fp ? Number(fp.protocolShare) / 10000 : 0
+
+          const decXn = Number(decX)
+          const decYn = Number(decY)
+          const symXStr = symX as string
+          const symYStr = symY as string
+
+          let tvlUSD = 0
+          try {
+            const tokenXInfo = getTokenByAddress(tokenX as string)
+            const tokenYInfo = getTokenByAddress(tokenY as string)
+            const [priceX, priceY] = await Promise.all([
+              tokenXInfo ? getVerifiedPrice(tokenXInfo.symbol).catch(() => null) : Promise.resolve(null),
+              tokenYInfo ? getVerifiedPrice(tokenYInfo.symbol).catch(() => null) : Promise.resolve(null),
+            ])
+            const reserveXNum = Number(reserveX) / 10 ** decXn
+            const reserveYNum = Number(reserveY) / 10 ** decYn
+            if (priceX) tvlUSD += reserveXNum * priceX.bestPrice
+            if (priceY) tvlUSD += reserveYNum * priceY.bestPrice
+          } catch { /* tvlUSD stays 0 */ }
 
           pools.push({
             address:      pairAddr,
-            tokenX:       symX as string,
-            tokenY:       symY as string,
+            tokenX:       symXStr,
+            tokenY:       symYStr,
             tokenXAddr:   tokenX as string,
             tokenYAddr:   tokenY as string,
             binStep:      Number(binStep),
@@ -303,6 +344,7 @@ export async function getLFJPools(maxPools = 50): Promise<LFJPool[]> {
             hasLiquidity: reserveX > 0n || reserveY > 0n,
             baseFee,
             protocolShare,
+            tvlUSD,
           })
         } catch { /* skip this pool */ }
       })
@@ -461,6 +503,53 @@ export async function getLFJPairsForTokens(
     }))
   } catch {
     return []
+  }
+}
+
+/**
+ * Returns total USD value locked across all LFJ pools.
+ *
+ * @returns Sum of `tvlUSD` across all pools returned by {@link getLFJPools}
+ *
+ * @example
+ * ```typescript
+ * const tvl = await getLFJTVL()
+ * // → 1050000
+ * ```
+ *
+ * @category DEX
+ */
+export async function getLFJTVL(): Promise<number> {
+  const pools = await getLFJPools()
+  return pools.reduce((sum, p) => sum + p.tvlUSD, 0)
+}
+
+/**
+ * Returns hooks info for an LFJ pair from LBHooksLens.
+ *
+ * @param pairAddress - Address of the LB pair contract
+ * @returns {@link LFJHooksInfo} or `null` if call reverts
+ *
+ * @category DEX
+ */
+export async function getLFJHooksInfo(pairAddress: string): Promise<LFJHooksInfo | null> {
+  try {
+    const result = await publicClient.readContract({
+      address:      LB_HOOKS_LENS,
+      abi:          LB_HOOKS_LENS_ABI,
+      functionName: 'getLBHooksOf',
+      args:         [pairAddress as `0x${string}`],
+    }) as unknown as { hooksAddress: string; hooksParameters: string }
+
+    if (!result || result.hooksAddress === '0x0000000000000000000000000000000000000000') return null
+
+    return {
+      pairAddress,
+      hooksAddress:    result.hooksAddress,
+      hooksParameters: result.hooksParameters,
+    }
+  } catch {
+    return null
   }
 }
 

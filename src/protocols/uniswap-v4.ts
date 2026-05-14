@@ -12,8 +12,10 @@
  * Available functions:
  * - {@link computeV4PoolId} — compute deterministic pool ID from PoolKey
  * - {@link getUniswapV4Pools} — discover V4 pools via Initialize events
- * - {@link getUniswapV4PoolState} — on-chain pool state (sqrtPriceX96, tick, liquidity)
+ * - {@link getUniswapV4PoolState} — on-chain pool state via StateView (sqrtPriceX96, tick, liquidity)
+ * - {@link getUniswapV4PoolLiquidity} — current liquidity for a pool via StateView
  * - {@link getUniswapV4Price} — price from sqrtPriceX96 across all fee tiers
+ * - {@link getUniswapV4TVL} — estimated TVL across discovered V4 pools
  * - {@link simulateUniswapV4Swap} — swap output estimate via V4Quoter
  */
 
@@ -26,10 +28,13 @@
 
 import { publicClient } from '../chain'
 import { keccak256, encodeAbiParameters, parseAbiParameters, zeroAddress } from 'viem'
+import { getVerifiedPrice } from './oracles'
 
 const POOL_MANAGER:     `0x${string}` = '0x188d586ddcf52439676ca21a244753fa19f9ea8e'
 const POSITION_MANAGER: `0x${string}` = '0x5b7ec4a94ff9bedb700fb82ab09d5846972f4016'
 const V4_QUOTER:        `0x${string}` = '0xa222dd357a9076d1091ed6aa2e16c9742dd26891'
+const STATE_VIEW:       `0x${string}` = '0x77395f3b2e73ae90843717371294fa97cc419d64'
+const UNIVERSAL_ROUTER: `0x${string}` = '0xfdf682f51fe81aa4898f0ae2163d8a55c127fbc7'
 
 // address(0) represents native MON in V4 Currency type
 const NATIVE_MON = zeroAddress
@@ -62,6 +67,38 @@ const POOL_MANAGER_ABI = [
     type: 'function' as const,
     inputs: [{ name: 'id', type: 'bytes32' }],
     outputs: [{ name: 'liquidity', type: 'uint128' }],
+    stateMutability: 'view' as const,
+  },
+] as const
+
+const STATEVIEW_ABI = [
+  {
+    name: 'getSlot0',
+    type: 'function' as const,
+    inputs: [{ name: 'poolId', type: 'bytes32' }],
+    outputs: [
+      { name: 'sqrtPriceX96', type: 'uint160' },
+      { name: 'tick',         type: 'int24'   },
+      { name: 'protocolFee',  type: 'uint24'  },
+      { name: 'lpFee',        type: 'uint24'  },
+    ],
+    stateMutability: 'view' as const,
+  },
+  {
+    name: 'getLiquidity',
+    type: 'function' as const,
+    inputs: [{ name: 'poolId', type: 'bytes32' }],
+    outputs: [{ name: 'liquidity', type: 'uint128' }],
+    stateMutability: 'view' as const,
+  },
+  {
+    name: 'getFeeGrowthGlobals',
+    type: 'function' as const,
+    inputs: [{ name: 'poolId', type: 'bytes32' }],
+    outputs: [
+      { name: 'feeGrowthGlobal0', type: 'uint256' },
+      { name: 'feeGrowthGlobal1', type: 'uint256' },
+    ],
     stateMutability: 'view' as const,
   },
 ] as const
@@ -285,18 +322,17 @@ export async function getUniswapV4PoolState(poolKey: V4PoolKey): Promise<{
     const poolId = computeV4PoolId(poolKey)
     const [slot0, liq] = await Promise.all([
       publicClient.readContract({
-        address: POOL_MANAGER, abi: POOL_MANAGER_ABI,
+        address: STATE_VIEW, abi: STATEVIEW_ABI,
         functionName: 'getSlot0', args: [poolId],
       }),
       publicClient.readContract({
-        address: POOL_MANAGER, abi: POOL_MANAGER_ABI,
+        address: STATE_VIEW, abi: STATEVIEW_ABI,
         functionName: 'getLiquidity', args: [poolId],
       }),
     ])
     const [sqrtPriceX96, tick] = slot0 as [bigint, number, number, number]
     if (sqrtPriceX96 === 0n) return null
 
-    // price = (sqrtPriceX96 / 2^96)^2
     const price = (Number(sqrtPriceX96) / 2 ** 96) ** 2
 
     return { sqrtPriceX96, tick: Number(tick), liquidity: liq as bigint, price }
@@ -438,6 +474,83 @@ export async function simulateUniswapV4Swap(
 }
 
 /**
+ * Get current liquidity for a V4 pool via StateView.
+ *
+ * @param poolId - bytes32 pool ID (from computeV4PoolId)
+ * @returns Current liquidity as bigint, or null on error
+ *
+ * @category DEX
+ */
+export async function getUniswapV4PoolLiquidity(poolId: `0x${string}`): Promise<bigint | null> {
+  try {
+    const liq = await publicClient.readContract({
+      address: STATE_VIEW,
+      abi:     STATEVIEW_ABI,
+      functionName: 'getLiquidity',
+      args: [poolId],
+    })
+    return liq as bigint
+  } catch {
+    return null
+  }
+}
+
+/**
+ * Estimate total USD TVL across discovered Uniswap V4 pools.
+ * For each pool: derives price from sqrtPriceX96, computes token amounts
+ * from concentrated liquidity formula at the active tick, then prices via oracles.
+ * Only pools with non-zero liquidity and recognized token symbols are included.
+ *
+ * @param lookbackBlocks - Blocks to scan for pools (passed to getUniswapV4Pools)
+ * @returns Total estimated TVL in USD
+ *
+ * @category DEX
+ */
+export async function getUniswapV4TVL(lookbackBlocks = 100): Promise<number> {
+  try {
+    const pools = await getUniswapV4Pools(lookbackBlocks)
+    const activePools = pools.filter(p => p.hasLiquidity && p.sqrtPriceX96 > 0n)
+
+    const tvls = await Promise.allSettled(
+      activePools.map(async pool => {
+        const sqrtP  = Number(pool.sqrtPriceX96) / 2 ** 96
+        const price  = sqrtP * sqrtP             // token1 per token0
+        const liq    = Number(pool.liquidity)
+
+        const amount0 = liq / sqrtP
+        const amount1 = liq * sqrtP
+
+        const token0sym = pool.token0Symbol
+        const token1sym = pool.token1Symbol
+
+        const [p0, p1] = await Promise.allSettled([
+          getVerifiedPrice(token0sym),
+          getVerifiedPrice(token1sym),
+        ])
+
+        const price0 = p0.status === 'fulfilled' ? p0.value.bestPrice : null
+        const price1 = p1.status === 'fulfilled' ? p1.value.bestPrice : null
+
+        if (!price0 && !price1) return 0
+
+        let tvl = 0
+        if (price0) tvl += (amount0 / 1e18) * price0
+        if (price1) tvl += (amount1 / 1e18) * price1
+
+        if (!price0 && price1) tvl = ((amount1 / 1e18) * price1) * 2
+        if (!price1 && price0) tvl = ((amount0 / 1e18) * price0) * 2
+
+        return tvl
+      })
+    )
+
+    return tvls.reduce((sum, r) => sum + (r.status === 'fulfilled' ? r.value : 0), 0)
+  } catch {
+    return 0
+  }
+}
+
+/**
  * Deployed Uniswap V4 contract addresses on Monad Mainnet.
  *
  * @category DEX
@@ -446,4 +559,6 @@ export const UNISWAP_V4_ADDRESSES = {
   poolManager:     POOL_MANAGER,
   positionManager: POSITION_MANAGER,
   quoter:          V4_QUOTER,
+  stateView:       STATE_VIEW,
+  universalRouter: UNIVERSAL_ROUTER,
 } as const

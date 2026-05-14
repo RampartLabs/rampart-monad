@@ -16,7 +16,11 @@
 import { publicClient } from '../chain'
 
 const SECONDS_PER_YEAR = 31_536_000
-const RAY = 1e27
+const RAY_BIG = BigInt('1000000000000000000000000000')
+
+function rayToNumber(ray: bigint): number {
+  return Number(ray * 10000n / RAY_BIG) / 10000
+}
 
 const KNOWN_POOLS: { address: `0x${string}`; name: string }[] = [
   { address: '0x6b343f7b797f1488aa48c49d540690f2b2c89751', name: 'USDC Lending Pool' },
@@ -25,10 +29,12 @@ const KNOWN_POOLS: { address: `0x${string}`; name: string }[] = [
 ]
 
 const POOL_ABI = [
-  { name: 'totalAssets',      type: 'function' as const, inputs: [], outputs: [{ type: 'uint256' }], stateMutability: 'view' as const },
-  { name: 'totalBorrowed',    type: 'function' as const, inputs: [], outputs: [{ type: 'uint256' }], stateMutability: 'view' as const },
-  { name: 'baseInterestRate', type: 'function' as const, inputs: [], outputs: [{ type: 'uint256' }], stateMutability: 'view' as const },
-  { name: 'underlyingToken',  type: 'function' as const, inputs: [], outputs: [{ type: 'address' }], stateMutability: 'view' as const },
+  { name: 'totalAssets',         type: 'function' as const, inputs: [], outputs: [{ type: 'uint256' }], stateMutability: 'view' as const },
+  { name: 'totalBorrowed',       type: 'function' as const, inputs: [], outputs: [{ type: 'uint256' }], stateMutability: 'view' as const },
+  { name: 'baseInterestRate',    type: 'function' as const, inputs: [], outputs: [{ type: 'uint256' }], stateMutability: 'view' as const },
+  { name: 'supplyRate',          type: 'function' as const, inputs: [], outputs: [{ type: 'uint256' }], stateMutability: 'view' as const },
+  { name: 'underlyingToken',     type: 'function' as const, inputs: [], outputs: [{ type: 'address' }], stateMutability: 'view' as const },
+  { name: 'availableLiquidity',  type: 'function' as const, inputs: [], outputs: [{ type: 'uint256' }], stateMutability: 'view' as const },
 ] as const
 
 const ERC20_ABI = [
@@ -37,16 +43,17 @@ const ERC20_ABI = [
 ] as const
 
 export interface GearboxPool {
-  address:         string
-  name:            string
-  assetSymbol:     string
-  assetAddress:    string
-  totalAssets:     number
-  totalBorrows:    number
-  utilizationRate: number
-  borrowAPY:       number
-  supplyAPY:       number
-  protocol:        'gearbox'
+  address:            string
+  name:               string
+  assetSymbol:        string
+  assetAddress:       string
+  totalAssets:        number
+  totalBorrows:       number
+  availableLiquidity: number
+  utilizationRate:    number
+  borrowAPY:          number
+  supplyAPY:          number
+  protocol:           'gearbox'
 }
 
 /**
@@ -71,18 +78,22 @@ export async function getGearboxPools(): Promise<GearboxPool[]> {
     KNOWN_POOLS.map(async ({ address, name }) => {
       const calls = await publicClient.multicall({
         contracts: [
-          { address, abi: POOL_ABI, functionName: 'totalAssets'      },
-          { address, abi: POOL_ABI, functionName: 'totalBorrowed'    },
-          { address, abi: POOL_ABI, functionName: 'baseInterestRate' },
-          { address, abi: POOL_ABI, functionName: 'underlyingToken'  },
+          { address, abi: POOL_ABI, functionName: 'totalAssets'        },
+          { address, abi: POOL_ABI, functionName: 'totalBorrowed'      },
+          { address, abi: POOL_ABI, functionName: 'baseInterestRate'   },
+          { address, abi: POOL_ABI, functionName: 'supplyRate'         },
+          { address, abi: POOL_ABI, functionName: 'underlyingToken'    },
+          { address, abi: POOL_ABI, functionName: 'availableLiquidity' },
         ],
         allowFailure: true,
       })
 
-      const totalAssetsRaw   = calls[0].status === 'success' ? (calls[0].result as bigint) : 0n
-      const totalBorrowedRaw = calls[1].status === 'success' ? (calls[1].result as bigint) : 0n
-      const baseRateRaw      = calls[2].status === 'success' ? (calls[2].result as bigint) : 0n
-      const underlyingAddr   = calls[3].status === 'success' ? (calls[3].result as `0x${string}`) : null
+      const totalAssetsRaw     = calls[0].status === 'success' ? (calls[0].result as bigint) : 0n
+      const totalBorrowedRaw   = calls[1].status === 'success' ? (calls[1].result as bigint) : 0n
+      const baseRateRaw        = calls[2].status === 'success' ? (calls[2].result as bigint) : 0n
+      const supplyRateRaw      = calls[3].status === 'success' ? (calls[3].result as bigint) : null
+      const underlyingAddr     = calls[4].status === 'success' ? (calls[4].result as `0x${string}`) : null
+      const availLiqRaw        = calls[5].status === 'success' ? (calls[5].result as bigint) : 0n
       if (!underlyingAddr) return null
 
       const tokenCalls = await publicClient.multicall({
@@ -94,22 +105,26 @@ export async function getGearboxPools(): Promise<GearboxPool[]> {
       })
 
       const assetSym = tokenCalls[0].status === 'success' ? (tokenCalls[0].result as string) : 'UNKNOWN'
-      const assetDec = tokenCalls[1].status === 'success' ? Number(tokenCalls[1].result as number) : 6
+      const assetDec = tokenCalls[1].status === 'success' ? Number(tokenCalls[1].result as number) : 18
 
-      const divisor        = 10n ** BigInt(assetDec)
-      const totalAssets    = Number(totalAssetsRaw  / divisor)
-      const totalBorrows   = Number(totalBorrowedRaw / divisor)
-      const utilizationRate = totalAssets > 0 ? totalBorrows / totalAssets : 0
-      const borrowAPY      = (Number(baseRateRaw) / RAY) * SECONDS_PER_YEAR
-      const supplyAPY      = borrowAPY * utilizationRate
+      const divisor           = 10n ** BigInt(assetDec)
+      const totalAssets       = Number(totalAssetsRaw  / divisor)
+      const totalBorrows      = Number(totalBorrowedRaw / divisor)
+      const availableLiqNum   = Number(availLiqRaw / divisor)
+      const utilizationRate   = totalAssets > 0 ? totalBorrows / totalAssets : 0
+      const borrowAPY         = rayToNumber(baseRateRaw) * SECONDS_PER_YEAR
+      const supplyAPY         = supplyRateRaw !== null
+        ? rayToNumber(supplyRateRaw) * SECONDS_PER_YEAR
+        : borrowAPY * utilizationRate
 
       return {
         address,
         name,
-        assetSymbol:  assetSym,
-        assetAddress: underlyingAddr,
+        assetSymbol:        assetSym,
+        assetAddress:       underlyingAddr,
         totalAssets,
         totalBorrows,
+        availableLiquidity: availableLiqNum,
         utilizationRate,
         borrowAPY,
         supplyAPY,

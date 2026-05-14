@@ -24,7 +24,7 @@ import { publicClient } from '../chain'
 
 export const SABLIER_ADDRESSES = {
   lockup:      '0x82723C1ffEc9D43dE5FA80b25Da8df99AfD470ba' as `0x${string}`,
-  batchLockup: '0x4FCACf614E456728CaEa87f475bd78EC3550E20B' as `0x${string}`,
+  batchLockup: '0xB02d463F531c3eB1a92B18B9d4756e9d03AB2562' as `0x${string}`,
 } as const
 
 const LOCKUP_ABI = [
@@ -62,7 +62,37 @@ const LOCKUP_ABI = [
     ],
     stateMutability: 'view' as const,
   },
+  {
+    name: 'withdrawableAmountOf',
+    type: 'function' as const,
+    inputs: [{ type: 'uint256', name: 'streamId' }],
+    outputs: [{ type: 'uint128' }],
+    stateMutability: 'view' as const,
+  },
+  {
+    name: 'streamedAmountOf',
+    type: 'function' as const,
+    inputs: [{ type: 'uint256', name: 'streamId' }],
+    outputs: [{ type: 'uint128' }],
+    stateMutability: 'view' as const,
+  },
+  {
+    name: 'statusOf',
+    type: 'function' as const,
+    inputs: [{ type: 'uint256', name: 'streamId' }],
+    outputs: [{ type: 'uint8' }],
+    stateMutability: 'view' as const,
+  },
+  {
+    name: 'refundableAmountOf',
+    type: 'function' as const,
+    inputs: [{ type: 'uint256', name: 'streamId' }],
+    outputs: [{ type: 'uint128' }],
+    stateMutability: 'view' as const,
+  },
 ] as const
+
+const STATUS_LABELS = ['PENDING', 'STREAMING', 'SETTLED', 'CANCELED', 'DEPLETED'] as const
 
 export interface SablierStats {
   totalStreams:   number
@@ -72,16 +102,20 @@ export interface SablierStats {
 }
 
 export interface SablierStream {
-  id:           number
-  sender:       string
-  asset:        string
-  deposited:    bigint
-  withdrawn:    bigint
-  refunded:     bigint
-  startTime:    number
-  endTime:      number
-  isDepleted:   boolean
-  wasCanceled:  boolean
+  id:                 number
+  sender:             string
+  asset:              string
+  deposited:          bigint
+  withdrawn:          bigint
+  refunded:           bigint
+  streamedAmount:     bigint
+  withdrawableAmount: bigint
+  refundableAmount:   bigint
+  status:             string
+  startTime:          number
+  endTime:            number
+  isDepleted:         boolean
+  wasCanceled:        boolean
 }
 
 /**
@@ -130,28 +164,44 @@ export async function getSablierStreamCount(): Promise<number> {
  */
 export async function getSablierStream(streamId: number): Promise<SablierStream | null> {
   try {
-    const s = await publicClient.readContract({
-      address: SABLIER_ADDRESSES.lockup,
-      abi: LOCKUP_ABI,
-      functionName: 'getStream',
-      args: [BigInt(streamId)],
-    })
+    const idBig = BigInt(streamId)
+    const [s, streamed, withdrawable, statusRaw, refundable] = await Promise.all([
+      publicClient.readContract({ address: SABLIER_ADDRESSES.lockup, abi: LOCKUP_ABI, functionName: 'getStream', args: [idBig] }),
+      publicClient.readContract({ address: SABLIER_ADDRESSES.lockup, abi: LOCKUP_ABI, functionName: 'streamedAmountOf', args: [idBig] }).catch(() => 0n),
+      publicClient.readContract({ address: SABLIER_ADDRESSES.lockup, abi: LOCKUP_ABI, functionName: 'withdrawableAmountOf', args: [idBig] }).catch(() => 0n),
+      publicClient.readContract({ address: SABLIER_ADDRESSES.lockup, abi: LOCKUP_ABI, functionName: 'statusOf', args: [idBig] }).catch(() => 0),
+      publicClient.readContract({ address: SABLIER_ADDRESSES.lockup, abi: LOCKUP_ABI, functionName: 'refundableAmountOf', args: [idBig] }).catch(() => 0n),
+    ])
 
+    const statusIndex = Number(statusRaw)
     return {
-      id:          streamId,
-      sender:      (s as any).sender,
-      asset:       (s as any).asset,
-      deposited:   (s as any).amounts.deposited,
-      withdrawn:   (s as any).amounts.withdrawn,
-      refunded:    (s as any).amounts.refunded,
-      startTime:   Number((s as any).startTime),
-      endTime:     Number((s as any).endTime),
-      isDepleted:  (s as any).isDepleted,
-      wasCanceled: (s as any).wasCanceled,
+      id: streamId,
+      sender:             (s as any).sender,
+      asset:              (s as any).asset,
+      deposited:          (s as any).amounts.deposited,
+      withdrawn:          (s as any).amounts.withdrawn,
+      refunded:           (s as any).amounts.refunded,
+      streamedAmount:     streamed as bigint,
+      withdrawableAmount: withdrawable as bigint,
+      refundableAmount:   refundable as bigint,
+      status:             STATUS_LABELS[statusIndex] ?? 'UNKNOWN',
+      startTime:          Number((s as any).startTime),
+      endTime:            Number((s as any).endTime),
+      isDepleted:         (s as any).isDepleted,
+      wasCanceled:        (s as any).wasCanceled,
     }
   } catch {
     return null
   }
+}
+
+export async function getSablierWithdrawable(streamId: number): Promise<bigint> {
+  return publicClient.readContract({
+    address: SABLIER_ADDRESSES.lockup,
+    abi: LOCKUP_ABI,
+    functionName: 'withdrawableAmountOf',
+    args: [BigInt(streamId)],
+  }).catch(() => 0n) as Promise<bigint>
 }
 
 /**

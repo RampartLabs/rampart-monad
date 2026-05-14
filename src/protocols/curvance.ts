@@ -3,7 +3,7 @@
  * @description Curvance omnichain lending protocol on Monad Mainnet.
  * Implements Compound V2-style cToken markets backed by ERC4626 vaults.
  * Twelve markets are deployed covering MON LSTs, USDC, WBTC, WETH, and
- * yield-bearing stablecoins. Supply APY is 0 while borrowing is inactive.
+ * yield-bearing stablecoins.
  *
  * **TVL:** ~$33M
  * **Type:** Lending (Compound V2 fork)
@@ -28,6 +28,8 @@ import { getVerifiedPrice } from './oracles'
 const CENTRAL_REGISTRY: `0x${string}` = '0x1310f352f1389969Ece6741671c4B919523912fF'
 const PROTOCOL_VIEWER:  `0x${string}` = '0xeD12668728c95DDa3411f29d5347356E6da222dA'
 
+const SECONDS_PER_YEAR = 365.25 * 24 * 3600
+
 // Verified cToken market addresses from monad-crypto/protocols/mainnet/curvance.jsonc
 const CTOKEN_MARKETS: Record<string, `0x${string}`> = {
   caprMON: '0xD9E2025b907E95EcC963A5018f56B87575B4aB26',
@@ -44,11 +46,14 @@ const CTOKEN_MARKETS: Record<string, `0x${string}`> = {
   csAUSD:  '0xAd4AA2a713fB86FBb6b60dE2aF9E32a11DB6Abf2',
 }
 
-// USD price seeds for tokens without Chainlink/Pyth feed (used for TVL calculation)
+// Fallback USD prices for tokens without on-chain oracle feed.
+// These are checked only after getVerifiedPrice() fails.
+// AUSD, muBOND, earnAUSD are yield-bearing stablecoins pegged ~$1.
 const PRICE_FALLBACKS: Record<string, number> = {
-  AUSD:    1.0,
-  BOND:    1.0,   // muBOND is a yield-bearing stablecoin
+  AUSD:     1.0,
+  BOND:     1.0,
   earnAUSD: 1.0,
+  sAUSD:    1.0,
 }
 
 // ─── ABIs ────────────────────────────────────────────────────────────────────
@@ -89,6 +94,13 @@ const CTOKEN_ABI = [
     outputs: [{ type: 'uint256' }],
     stateMutability: 'view' as const,
   },
+  {
+    name: 'interestRateModel',
+    type: 'function' as const,
+    inputs: [],
+    outputs: [{ type: 'address' }],
+    stateMutability: 'view' as const,
+  },
 ] as const
 
 const ERC20_ABI = [
@@ -108,44 +120,58 @@ const ERC20_ABI = [
   },
 ] as const
 
+const IRM_ABI = [
+  {
+    name: 'supplyRate',
+    type: 'function' as const,
+    inputs: [
+      { name: 'assetsHeld', type: 'uint256' },
+      { name: 'debt',       type: 'uint256' },
+    ],
+    outputs: [{ type: 'uint256' }],
+    stateMutability: 'view' as const,
+  },
+  {
+    name: 'borrowRate',
+    type: 'function' as const,
+    inputs: [
+      { name: 'assetsHeld', type: 'uint256' },
+      { name: 'debt',       type: 'uint256' },
+    ],
+    outputs: [{ type: 'uint256' }],
+    stateMutability: 'view' as const,
+  },
+] as const
+
 // ─── Types ───────────────────────────────────────────────────────────────────
 
 export interface CurvanceMarket {
-  cToken:       string   // cToken symbol (e.g. 'caprMON')
+  cToken:       string
   cTokenAddr:   string
-  asset:        string   // underlying asset symbol
+  asset:        string
   assetAddr:    string
   decimals:     number
-  totalAssets:  number   // in underlying asset units
-  totalBorrows: number   // in underlying asset units
-  totalAssetsUSD: number // USD value
-  supplyAPY:    number   // annual supply yield (0 = not yet borrowing)
-  borrowAPR:    number   // annual borrow rate (0 = not yet borrowing)
-  utilization:  number   // borrow/supply ratio
-  exchangeRate: number   // cToken:asset exchange rate (ERC4626 pattern)
+  totalAssets:  number
+  totalBorrows: number
+  totalAssetsUSD: number
+  supplyAPY:    number
+  borrowAPR:    number
+  utilization:  number
+  exchangeRate: number
   protocol:     'curvance'
 }
 
 // ─── Functions ───────────────────────────────────────────────────────────────
 
 /**
- * Fetch all Curvance cToken markets with TVL and utilization data.
+ * Fetch all Curvance cToken markets with TVL, utilization, and APY data.
  *
- * For each of the 12 known cToken markets the function reads `totalAssets`,
- * `totalSupply`, `totalBorrows`, and `convertToAssets` (exchange rate) from
- * the cToken contract, then resolves a USD price via {@link getVerifiedPrice}
- * or the built-in fallback table for assets without Chainlink/Pyth feeds.
- * Results are sorted descending by USD TVL.
- *
- * Supply APY and borrow APR are reported as 0 while borrowing is inactive.
+ * For each market: reads `totalAssets`, `totalBorrows`, `convertToAssets`,
+ * and `interestRateModel`. Calls `supplyRate(assetsHeld, debt)` and
+ * `borrowRate(assetsHeld, debt)` on the IRM to derive real APY values.
+ * Price is resolved via {@link getVerifiedPrice} first, then PRICE_FALLBACKS.
  *
  * @returns Array of market snapshots sorted by `totalAssetsUSD` descending
- *
- * @example
- * ```typescript
- * const markets = await getCurvanceMarkets()
- * // → [{ cToken: 'cWMON', asset: 'WMON', totalAssetsUSD: 1200000, utilization: 0, ... }]
- * ```
  *
  * @category Lending
  */
@@ -166,34 +192,59 @@ export async function getCurvanceMarkets(): Promise<CurvanceMarket[]> {
           publicClient.readContract({ address: assetAddr as `0x${string}`, abi: ERC20_ABI, functionName: 'decimals' }),
         ])
 
-        const decimals     = Number(dec)
-        const assetsHuman  = Number(totalAssets) / 10 ** decimals
-        const supplyHuman  = Number(totalSupply) / 10 ** decimals
+        const decimals    = Number(dec)
+        const assetsHuman = Number(totalAssets) / 10 ** decimals
 
-        // Borrow data (may not be implemented yet)
         let borrowsHuman = 0
+        let borrowsRaw   = BigInt(0)
         try {
           const borrows = await publicClient.readContract({ address: cAddr, abi: CTOKEN_ABI, functionName: 'totalBorrows' })
-          borrowsHuman  = Number(borrows) / 10 ** decimals
-        } catch { /* totalBorrows not implemented */ }
+          borrowsRaw    = borrows as bigint
+          borrowsHuman  = Number(borrowsRaw) / 10 ** decimals
+        } catch { /* totalBorrows not active */ }
 
-        // Exchange rate via ERC4626 convertToAssets(1e18)
         let exchangeRate = 1
         try {
           const oneShare = BigInt(10 ** Math.min(decimals, 18))
           const assets   = await publicClient.readContract({
             address: cAddr, abi: CTOKEN_ABI, functionName: 'convertToAssets', args: [oneShare],
           })
-          exchangeRate = Number(assets) / Number(oneShare)
-        } catch { /* use 1:1 */ }
+          exchangeRate = Number(assets as bigint) / Number(oneShare)
+        } catch { /* 1:1 fallback */ }
 
-        // Get USD price for TVL calculation
-        let usdPrice = PRICE_FALLBACKS[sym as string] ?? 0
+        let supplyAPY = 0
+        let borrowAPR = 0
+        try {
+          const irmAddr = await publicClient.readContract({ address: cAddr, abi: CTOKEN_ABI, functionName: 'interestRateModel' })
+          if (irmAddr && irmAddr !== '0x0000000000000000000000000000000000000000') {
+            const irm = irmAddr as `0x${string}`
+            const [supplyRateRaw, borrowRateRaw] = await Promise.all([
+              publicClient.readContract({
+                address: irm, abi: IRM_ABI, functionName: 'supplyRate',
+                args: [totalAssets as bigint, borrowsRaw],
+              }),
+              publicClient.readContract({
+                address: irm, abi: IRM_ABI, functionName: 'borrowRate',
+                args: [totalAssets as bigint, borrowsRaw],
+              }),
+            ])
+            const supplyRatePerSec = Number(supplyRateRaw as bigint) / 1e18
+            const borrowRatePerSec = Number(borrowRateRaw as bigint) / 1e18
+            supplyAPY = Math.pow(1 + supplyRatePerSec, SECONDS_PER_YEAR) - 1
+            borrowAPR = Math.pow(1 + borrowRatePerSec, SECONDS_PER_YEAR) - 1
+          }
+        } catch { /* IRM not active or different interface */ }
+
+        const symStr = sym as string
+
+        let usdPrice = 0
+        try {
+          const vp = await getVerifiedPrice(symStr)
+          usdPrice  = vp.bestPrice
+        } catch { /* no oracle feed */ }
+
         if (!usdPrice) {
-          try {
-            const vp  = await getVerifiedPrice(sym as string)
-            usdPrice  = vp.bestPrice
-          } catch { /* use oracle price unavailable */ }
+          usdPrice = PRICE_FALLBACKS[symStr] ?? 0
         }
 
         const utilization    = assetsHuman > 0 ? borrowsHuman / assetsHuman : 0
@@ -202,14 +253,14 @@ export async function getCurvanceMarkets(): Promise<CurvanceMarket[]> {
         markets.push({
           cToken:       cSymbol,
           cTokenAddr:   cAddr,
-          asset:        sym as string,
+          asset:        symStr,
           assetAddr:    assetAddr as string,
           decimals,
           totalAssets:  assetsHuman,
           totalBorrows: borrowsHuman,
           totalAssetsUSD,
-          supplyAPY:    0,    // requires interest rate model — not yet active
-          borrowAPR:    0,    // requires active borrowing
+          supplyAPY,
+          borrowAPR,
           utilization,
           exchangeRate,
           protocol:     'curvance',
@@ -224,16 +275,7 @@ export async function getCurvanceMarkets(): Promise<CurvanceMarket[]> {
 /**
  * Return the total USD TVL across all Curvance cToken markets.
  *
- * Aggregates `totalAssetsUSD` from every market returned by
- * {@link getCurvanceMarkets}. Requires oracle prices for underlying assets.
- *
  * @returns Sum of USD TVL across all 12 cToken markets
- *
- * @example
- * ```typescript
- * const tvl = await getCurvanceTVL()
- * // → 33000000
- * ```
  *
  * @category Lending
  */
@@ -249,12 +291,6 @@ export async function getCurvanceTVL(): Promise<number> {
  *
  * @param cSymbol - cToken symbol to look up (e.g. `'cWMON'`, `'cUSDC'`)
  * @returns Market snapshot, or `null` if the symbol is not found
- *
- * @example
- * ```typescript
- * const market = await getCurvanceMarket('cUSDC')
- * // → { cToken: 'cUSDC', asset: 'USDC', totalAssetsUSD: 5000000, ... }
- * ```
  *
  * @category Lending
  */

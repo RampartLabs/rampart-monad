@@ -5,7 +5,8 @@
 
 // Layer 1: Functions (to be filled as phases complete)
 export { getTokenPrice, getKuruPools, getOrderbook, simulateKuruSwap } from './protocols/kuru'
-export { getUniswapPools, getUniswapPrice, compareWithKuru } from './protocols/uniswap'
+export { getUniswapPools, getUniswapPrice, compareWithKuru, getUniswapTVL, UNISWAP_V3_ADDRESSES } from './protocols/uniswap'
+export type { UniswapV3Pool } from './protocols/uniswap'
 export { getStakingAPR, getAPrioriExchangeRate, getAPrioriTVL, getAPrioriStats } from './protocols/apriori'
 export { getLendingRates, getBestSupplyAsset, getBestBorrowAsset, getNeverlandTVL, compareYields } from './protocols/neverland'
 export { subscribeToSwaps, subscribeToStaking, subscribeToNewBlocks } from './realtime/envio'
@@ -21,10 +22,11 @@ export { getAllLSTStats, getBestLST, compareLSTs, getTotalStakedMON, getAPrioriL
 export { getEulerVaults, getEulerBestSupply, getEulerTVL } from './protocols/euler'
 export type { EulerVault } from './protocols/euler'
 
-// Phase 12 — Oracle Aggregator (Phase 2: +Redstone +Chronicle +LST ratios)
+// Phase 12 — Oracle Aggregator (Phase 2: +Redstone +Chronicle +LST ratios +Band +Switchboard +eOracle)
 export {
   getVerifiedPrice, getPrices, getChainlinkRawPrice, detectOracleDiscrepancy,
   getRedstonePrice, getChroniclePrice, getLSTRatios,
+  getBandPrice, getSwitchboardPrice, getEOraclePrice,
 } from './protocols/oracles'
 export type { OraclePrice, VerifiedPrice, LSTRatios } from './protocols/oracles'
 
@@ -48,8 +50,8 @@ export { getMorphoVaults, getMorphoTVL, getBestMorphoVault } from './protocols/m
 export type { MorphoVault } from './protocols/morpho'
 
 // Phase 17 — Curve Finance
-export { getCurvePools, getCurveTVL, getCurvePoolByCoins } from './protocols/curve'
-export type { CurvePool } from './protocols/curve'
+export { getCurvePools, getCurveTVL, getCurvePoolByCoins, getCurvePoolAPY, getCurveVolume, getDy } from './protocols/curve'
+export type { CurvePool, CurvePoolAPY, CurveVolumeData } from './protocols/curve'
 
 // Phase 18 — Balancer V3
 export { getBalancerPools, getBalancerTVL } from './protocols/balancer'
@@ -60,27 +62,27 @@ export { getGearboxPools, getGearboxTVL } from './protocols/gearbox'
 export type { GearboxPool } from './protocols/gearbox'
 
 // Phase 20 — Clober V2 DEX
-export { getCloberBooks, getCloberBookById } from './protocols/clober'
-export type { CloberBook } from './protocols/clober'
+export { getCloberBooks, getCloberBookById, getCloberTVL, getCloberBestBid, getCloberBestAsk } from './protocols/clober'
+export type { CloberBook, CloberBestPrice } from './protocols/clober'
 
 // Phase 21 — Upshift Yield Aggregator
 export { getUpshiftVaults, getUpshiftTVL, getBestUpshiftVault } from './protocols/upshift'
 export type { UpshiftVault } from './protocols/upshift'
 
 // Phase 22 — PancakeSwap V3
-export { getPancakeSwapPools, getPancakeSwapPrice, getPancakeSwapQuote, getPancakeSwapTopPairs, PANCAKE_ADDRESSES } from './protocols/pancakeswap'
-export type { PancakeSwapPair, PancakeSwapQuote } from './protocols/pancakeswap'
+export { getPancakeSwapPools, getPancakeSwapPrice, getPancakeSwapQuote, getPancakeSwapTopPairs, getPancakeSwapTVL, PANCAKE_ADDRESSES } from './protocols/pancakeswap'
+export type { PancakeSwapPair, PancakeSwapQuote, PancakePool } from './protocols/pancakeswap'
 
 // Phase 23 — LFJ (Trader Joe Liquidity Book)
-export { getLFJPools, getLFJPrice, getLFJPriceByAddress, getLFJPairCount, getLFJPairsForTokens, LFJ_ADDRESSES } from './protocols/lfj'
-export type { LFJPool, LFJQuote } from './protocols/lfj'
+export { getLFJPools, getLFJPrice, getLFJPriceByAddress, getLFJPairCount, getLFJPairsForTokens, getLFJTVL, getLFJHooksInfo, LFJ_ADDRESSES } from './protocols/lfj'
+export type { LFJPool, LFJQuote, LFJHooksInfo } from './protocols/lfj'
 
 // Phase 24 — Curvance ($58.9M TVL lending)
 export { getCurvanceMarkets, getCurvanceTVL, getCurvanceMarket, CURVANCE_ADDRESSES } from './protocols/curvance'
 export type { CurvanceMarket } from './protocols/curvance'
 
 // Phase 25 — Uniswap V4
-export { getUniswapV4Pools, getUniswapV4PoolState, getUniswapV4Price, simulateUniswapV4Swap, computeV4PoolId, UNISWAP_V4_ADDRESSES } from './protocols/uniswap-v4'
+export { getUniswapV4Pools, getUniswapV4PoolState, getUniswapV4PoolLiquidity, getUniswapV4Price, getUniswapV4TVL, simulateUniswapV4Swap, computeV4PoolId, UNISWAP_V4_ADDRESSES } from './protocols/uniswap-v4'
 export type { V4PoolKey, UniswapV4Pool, V4SwapSimulation } from './protocols/uniswap-v4'
 
 // Phase 26 — Renzo (ezETH liquid restaking)
@@ -103,23 +105,23 @@ export type {
 } from './protocols/beefy'
 
 // Phase 28 — WooFi DEX (PMM)
-export { getWooFiPools, getWooFiQuote, WOOFI_ADDRESSES } from './protocols/woofi'
-export type { WooFiPool, WooFiQuote } from './protocols/woofi'
+export { getWooFiPools, getWooFiQuote, getWooFiRouterQuote, getWooFiStats, WOOFI_ADDRESSES } from './protocols/woofi'
+export type { WooFiPool, WooFiQuote, WooFiStats } from './protocols/woofi'
 
 // Phase 29 — KyberSwap (DEX aggregator)
-export { getKyberSwapQuote, getKyberSwapPrice, KYBERSWAP_ADDRESSES } from './protocols/kyberswap'
-export type { KyberSwapQuote } from './protocols/kyberswap'
+export { getKyberSwapQuote, getKyberSwapPrice, buildKyberSwapRoute, KYBERSWAP_ADDRESSES } from './protocols/kyberswap'
+export type { KyberSwapQuote, KyberSwapBuildResult } from './protocols/kyberswap'
 
 // Phase 30 — iZiSwap (concentrated liquidity DEX)
 export { getIZiPools, getIZiStats, IZISWAP_ADDRESSES } from './protocols/iziswap'
 export type { IZiPool } from './protocols/iziswap'
 
 // Phase 31 — Bean Exchange (DLMM DEX)
-export { getBeanPairs, getBeanPairCount, BEAN_ADDRESSES } from './protocols/bean'
+export { getBeanPairs, getBeanPairCount, getBeanTVL, getBeanPair, BEAN_ADDRESSES } from './protocols/bean'
 export type { BeanPair } from './protocols/bean'
 
 // Phase 32 — Sablier (token streaming)
-export { getSablierStats, getSablierStream, getSablierStreamCount, SABLIER_ADDRESSES } from './protocols/sablier'
+export { getSablierStats, getSablierStream, getSablierStreamCount, getSablierWithdrawable, SABLIER_ADDRESSES } from './protocols/sablier'
 export type { SablierStats, SablierStream } from './protocols/sablier'
 
 // Phase 33 — Covenant (CDP/structured products)
@@ -163,16 +165,16 @@ export { getCapricornPools, getCapricornPrice, CAPRICORN_ADDRESSES } from './pro
 export type { CapricornPool } from './protocols/capricorn'
 
 // Phase 44 — OpenOcean (DEX aggregator)
-export { getOpenOceanQuote, getOpenOceanPrice, isOpenOceanAvailable, OPENOCEAN_ADDRESSES } from './protocols/openocean'
-export type { OpenOceanQuote } from './protocols/openocean'
+export { getOpenOceanQuote, getOpenOceanPrice, isOpenOceanAvailable, buildOpenOceanSwap, getOpenOceanGasPrice, getOpenOceanTokens, OPENOCEAN_ADDRESSES } from './protocols/openocean'
+export type { OpenOceanQuote, OpenOceanSwapTx, OpenOceanGasPrice, OpenOceanToken } from './protocols/openocean'
 
 // Phase 45 — Pingu Exchange (concentrated liquidity DEX)
 export { getPinguStats, isPinguAvailable, PINGU_ADDRESSES } from './protocols/pingu'
 export type { PinguStats } from './protocols/pingu'
 
 // Phase 47 — Nabla Finance (single-sided AMM)
-export { getNablaPools, getNablaTVL, NABLA_ADDRESSES } from './protocols/nabla'
-export type { NablaPool } from './protocols/nabla'
+export { getNablaPools, getNablaSwapPools, getNablaAmountOut, getNablaTVL, NABLA_ADDRESSES } from './protocols/nabla'
+export type { NablaPool, NablaSwapPool } from './protocols/nabla'
 
 // Phase 48 — TownSquare (cross-chain lending)
 export { getTownSquareMarkets, getTownSquareTVL, TOWNSQUARE_ADDRESSES } from './protocols/townsquare'

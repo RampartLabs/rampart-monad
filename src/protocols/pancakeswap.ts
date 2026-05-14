@@ -14,6 +14,7 @@
  * - {@link getPancakeSwapPrice} — best price via QuoterV2 across all fee tiers
  * - {@link getPancakeSwapQuote} — exact-input quote with fee tier selection
  * - {@link getPancakeSwapTopPairs} — most active trading pairs with liquidity data
+ * - {@link getPancakeSwapTVL} — total USD TVL across all discovered pools
  */
 
 // Rampart SDK — PancakeSwap V3 on Monad Mainnet (Phase 3.1)
@@ -23,6 +24,7 @@
 
 import { publicClient } from '../chain'
 import { getToken } from './dex/tokens'
+import { getVerifiedPrice } from './oracles'
 import type { Pool } from '../types'
 
 const PANCAKE_V3_FACTORY:    `0x${string}` = '0x0BFbCF9fa4f9C56B0F40a671Ad40E0805A091865'
@@ -107,7 +109,10 @@ export interface PancakeSwapPair {
   fee:        number
   liquidity:  bigint
   sqrtPrice:  bigint
+  tvlUSD?:    number
 }
+
+export type PancakePool = PancakeSwapPair
 
 export interface PancakeSwapQuote {
   tokenIn:    string
@@ -129,6 +134,9 @@ const SEED_PAIRS: Array<[string, string]> = [
   ['USDC', 'USDT'],
   ['WETH', 'USDC'],
   ['WBTC', 'USDC'],
+  ['aprMON', 'USDC'],
+  ['shMON', 'WMON'],
+  ['gMON', 'WMON'],
 ]
 
 // ─── Functions ───────────────────────────────────────────────────────────────
@@ -172,13 +180,43 @@ export async function getPancakeSwapPools(): Promise<PancakeSwapPair[]> {
           ])
           const s0 = slot0Raw as any
 
+          const sqrtPriceX96: bigint = s0?.sqrtPriceX96 ?? 0n
+          const liq = liquidityRaw as bigint
+
+          let tvlUSD: number | undefined
+          if (sqrtPriceX96 > 0n && liq > 0n) {
+            const tAInfo = getToken(symA)
+            const tBInfo = getToken(symB)
+            const sqrtP  = Number(sqrtPriceX96) / 2 ** 96
+            const price  = sqrtP * sqrtP
+            const liquidity = Number(liq)
+            const amount0 = liquidity / sqrtP / 10 ** tAInfo.decimals
+            const amount1 = liquidity * sqrtP / 10 ** tBInfo.decimals
+
+            const [p0, p1] = await Promise.allSettled([
+              getVerifiedPrice(symA),
+              getVerifiedPrice(symB),
+            ])
+            const price0 = p0.status === 'fulfilled' ? p0.value.bestPrice : null
+            const price1 = p1.status === 'fulfilled' ? p1.value.bestPrice : null
+
+            if (price0 && price1) {
+              tvlUSD = amount0 * price0 + amount1 * price1
+            } else if (price0) {
+              tvlUSD = amount0 * price0 * 2
+            } else if (price1) {
+              tvlUSD = amount1 * price1 * 2
+            }
+          }
+
           pools.push({
             address:   addr,
             token0:    symA,
             token1:    symB,
             fee,
-            liquidity:  liquidityRaw as bigint,
-            sqrtPrice:  s0?.sqrtPriceX96 ?? 0n,
+            liquidity:  liq,
+            sqrtPrice:  sqrtPriceX96,
+            tvlUSD,
           })
         } catch {
           // pool doesn't exist for this fee tier
@@ -361,6 +399,23 @@ export async function getPancakeSwapTopPairs(): Promise<PancakeSwapPair[]> {
   )
 
   return pairs
+}
+
+/**
+ * Returns total USD TVL across all discovered PancakeSwap V3 pools.
+ * Calls getPancakeSwapPools() which computes tvlUSD per pool via oracle prices.
+ *
+ * @returns Total TVL in USD
+ *
+ * @category DEX
+ */
+export async function getPancakeSwapTVL(): Promise<number> {
+  try {
+    const pools = await getPancakeSwapPools()
+    return pools.reduce((sum, p) => sum + (p.tvlUSD ?? 0), 0)
+  } catch {
+    return 0
+  }
 }
 
 /** Contract addresses for external reference. */

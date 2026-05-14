@@ -22,17 +22,24 @@
 // Discovered 2026-04-17 (no official docs had the pool address):
 //   Pool:         0x80f00661b13cc5f6ccd3885be7b4c9c67545d585
 //   Found via:    aToken.POOL() call on known aToken address
-//   Reserves:     11 assets (USDC, WMON, USDT0, WBTC, WETH, sMON, shMON, AUSD, gMON, earnAUSD, loAZND)
+//   Reserves:     dynamic via getReservesList()
 //
 // Rate encoding:
 //   All rates in RAY units (1e27).
 //   APY = (1 + rate/1e27/SECONDS_PER_YEAR)^SECONDS_PER_YEAR - 1
+//
+// Configuration bitmask (Aave V3 standard):
+//   bits 0-15:   LTV (basis points)
+//   bits 16-31:  liquidation threshold (basis points)
+//   bits 32-47:  liquidation bonus (basis points)
+//   bits 64-79:  reserve factor (basis points)
 //
 // Verified rates (2026-04-17):
 //   USDC supply APY: 3.87%  | borrow APY: 8.72%
 //   liquidityIndex:  1.0152 (confirms live market with accumulated interest)
 
 import { publicClient } from '../chain'
+import { getVerifiedPrice } from './oracles'
 import type { LendingRate, YieldComparison, StakingAPR } from '../types'
 
 export const NEVERLAND_POOL = '0x80f00661b13cc5f6ccd3885be7b4c9c67545d585' as const
@@ -40,20 +47,7 @@ export const NEVERLAND_POOL = '0x80f00661b13cc5f6ccd3885be7b4c9c67545d585' as co
 const RAY = BigInt('1000000000000000000000000000') // 1e27
 const SECONDS_PER_YEAR = 365.25 * 24 * 3600
 
-// Reserve token addresses (confirmed on Monad mainnet)
-const RESERVE_TOKENS: Record<string, string> = {
-  USDC:     '0x754704bc059f8c67012fed69bc8a327a5aafb603',
-  WMON:     '0x3bd359c1119da7da1d913d1c4d2b7c461115433a',
-  USDT0:    '0xe7cd86e13ac4309349f30b3435a9d337750fc82d',
-  WBTC:     '0x0555e30da8f98308edb960aa94c0db47230d2b9c',
-  WETH:     '0xee8c0e9f1bffb4eb878d8f15f368a02a35481242',
-  sMON:     '0xa3227c5969757783154c60bf0bc1944180ed81b9',
-  shMON:    '0x1b68626dca36c7fe922fd2d55e4f631d962de19c',
-  AUSD:     '0x00000000efe302beaa2b3e6e1b18d08d69a9012a',
-  gMON:     '0x8498312a6b3cbd158bf0c93abdcf29e6e4f55081',
-  earnAUSD: '0x103222f020e98bba0ad9809a011fdf8e6f067496',
-  loAZND:   '0x9c82eb49b51f7dc61e22ff347931ca32adc6cd90',
-}
+const NON_STABLE_SYMBOLS = new Set(['WMON', 'WETH', 'WBTC', 'MON'])
 
 /** Convert ray-encoded rate to APY using compound formula */
 function rayToAPY(rate: bigint): number {
@@ -61,8 +55,30 @@ function rayToAPY(rate: bigint): number {
   return Math.pow(1 + ratePerSecond, SECONDS_PER_YEAR) - 1
 }
 
-/** ABI fragment for Aave V3 Pool.getReserveData */
+/** Decode Aave V3 configuration bitmask */
+function decodeConfiguration(config: bigint): {
+  ltv: number
+  liquidationThreshold: number
+  liquidationBonus: number
+  reserveFactor: number
+} {
+  const mask16 = BigInt(0xffff)
+  return {
+    ltv:                  Number((config) & mask16) / 100,
+    liquidationThreshold: Number((config >> BigInt(16)) & mask16) / 100,
+    liquidationBonus:     Number((config >> BigInt(32)) & mask16) / 100,
+    reserveFactor:        Number((config >> BigInt(64)) & mask16) / 100,
+  }
+}
+
 const POOL_ABI = [
+  {
+    name: 'getReservesList',
+    type: 'function',
+    stateMutability: 'view',
+    inputs: [],
+    outputs: [{ name: '', type: 'address[]' }],
+  },
   {
     name: 'getReserveData',
     type: 'function',
@@ -94,7 +110,7 @@ const POOL_ABI = [
   },
 ] as const
 
-const ATOKEN_ABI = [
+const ERC20_ABI = [
   {
     name: 'totalSupply',
     type: 'function',
@@ -109,91 +125,135 @@ const ATOKEN_ABI = [
     inputs: [],
     outputs: [{ name: '', type: 'uint8' }],
   },
+  {
+    name: 'symbol',
+    type: 'function',
+    stateMutability: 'view',
+    inputs: [],
+    outputs: [{ name: '', type: 'string' }],
+  },
 ] as const
 
+export interface NeverlandLendingRate extends LendingRate {
+  ltv:                  number
+  liquidationThreshold: number
+  liquidationBonus:     number
+  reserveFactor:        number
+}
+
 /**
- * Returns supply and borrow APY for all 11 Neverland reserve assets.
+ * Returns supply and borrow APY for all Neverland reserve assets.
  *
- * Batches `getReserveData` calls via multicall, then fetches each aToken's
- * `totalSupply` and `decimals` in a second multicall. Rates are decoded from
- * RAY units (1e27) using the compound APY formula.
+ * Dynamically fetches reserves via `getReservesList()`, then reads
+ * `getReserveData()` for each. Borrow totals come from `variableDebtToken.totalSupply()`.
+ * Configuration bitmask is decoded for LTV and liquidation parameters.
  *
- * @returns Array of {@link LendingRate} objects, one per active reserve
+ * @returns Array of {@link NeverlandLendingRate} objects, one per active reserve
  *
  * @example
  * ```typescript
  * const rates = await getLendingRates()
- * // → [{ protocol: 'neverland', asset: 'USDC', supplyAPY: 0.0387, borrowAPR: 0.0872, ... }, ...]
+ * // → [{ protocol: 'neverland', asset: 'USDC', supplyAPY: 0.0387, borrowAPR: 0.0872, ltv: 80, ... }]
  * ```
  *
  * @category Lending
  */
-export async function getLendingRates(): Promise<LendingRate[]> {
-  const assets = Object.entries(RESERVE_TOKENS)
+export async function getLendingRates(): Promise<NeverlandLendingRate[]> {
+  let reserveAddresses: readonly `0x${string}`[]
+  try {
+    reserveAddresses = await publicClient.readContract({
+      address: NEVERLAND_POOL as `0x${string}`,
+      abi: POOL_ABI,
+      functionName: 'getReservesList',
+    }) as readonly `0x${string}`[]
+  } catch {
+    return []
+  }
 
-  // Batch getReserveData calls via multicall
+  if (!reserveAddresses || reserveAddresses.length === 0) return []
+
   const reserveDataResults = await publicClient.multicall({
-    contracts: assets.map(([, addr]) => ({
+    contracts: reserveAddresses.map(addr => ({
       address: NEVERLAND_POOL as `0x${string}`,
       abi: POOL_ABI,
       functionName: 'getReserveData',
-      args: [addr as `0x${string}`],
+      args: [addr],
     })),
     allowFailure: true,
   })
 
-  // Get aToken totalSupply + decimals
-  const aTokenContracts: { address: `0x${string}`; abi: typeof ATOKEN_ABI; functionName: string }[] = []
-  const validReserves: { symbol: string; addr: string; idx: number }[] = []
+  const validReserves: {
+    addr: `0x${string}`
+    data: any
+    aTokenAddr: `0x${string}`
+    debtTokenAddr: `0x${string}`
+  }[] = []
 
-  reserveDataResults.forEach((r, idx) => {
+  reserveDataResults.forEach((r, i) => {
     if (r.status === 'success' && r.result) {
       const data = r.result as any
-      if (data.aTokenAddress && data.aTokenAddress !== '0x0000000000000000000000000000000000000000') {
-        validReserves.push({ symbol: assets[idx][0], addr: assets[idx][1], idx })
-        aTokenContracts.push({
-          address: data.aTokenAddress,
-          abi: ATOKEN_ABI,
-          functionName: 'totalSupply',
-        })
-        aTokenContracts.push({
-          address: data.aTokenAddress,
-          abi: ATOKEN_ABI,
-          functionName: 'decimals',
+      const aAddr = data.aTokenAddress as string
+      const dAddr = data.variableDebtTokenAddress as string
+      if (aAddr && aAddr !== '0x0000000000000000000000000000000000000000') {
+        validReserves.push({
+          addr: reserveAddresses[i],
+          data,
+          aTokenAddr:  aAddr as `0x${string}`,
+          debtTokenAddr: dAddr as `0x${string}`,
         })
       }
     }
   })
 
-  const aTokenResults = await publicClient.multicall({
-    contracts: aTokenContracts,
-    allowFailure: true,
-  })
+  if (validReserves.length === 0) return []
 
-  const rates: LendingRate[] = []
+  const tokenContracts: { address: `0x${string}`; abi: typeof ERC20_ABI; functionName: string }[] = []
+  for (const r of validReserves) {
+    tokenContracts.push({ address: r.addr,          abi: ERC20_ABI, functionName: 'symbol'      })
+    tokenContracts.push({ address: r.addr,          abi: ERC20_ABI, functionName: 'decimals'    })
+    tokenContracts.push({ address: r.aTokenAddr,    abi: ERC20_ABI, functionName: 'totalSupply' })
+    tokenContracts.push({ address: r.debtTokenAddr, abi: ERC20_ABI, functionName: 'totalSupply' })
+  }
 
-  validReserves.forEach(({ symbol, addr, idx }, i) => {
-    const reserveData = (reserveDataResults[idx] as any).result as any
-    const supplyRaw   = (aTokenResults[i * 2] as any)?.result as bigint | undefined
-    const decimals    = (aTokenResults[i * 2 + 1] as any)?.result as number | undefined
+  const tokenResults = await publicClient.multicall({ contracts: tokenContracts, allowFailure: true })
 
-    if (!reserveData) return
+  const rates: NeverlandLendingRate[] = []
 
-    const decimalDivisor = decimals ? Math.pow(10, decimals) : 1e6 // default 6 for stables
-    const totalSupply    = supplyRaw ? Number(supplyRaw) / decimalDivisor : 0
-    const totalBorrow    = 0 // would need variableDebtToken.totalSupply — optional
+  validReserves.forEach((reserve, i) => {
+    const base = i * 4
+    const symbolResult   = tokenResults[base]
+    const decimalsResult = tokenResults[base + 1]
+    const supplyResult   = tokenResults[base + 2]
+    const debtResult     = tokenResults[base + 3]
+
+    const symbol   = symbolResult.status   === 'success' ? String(symbolResult.result)   : `UNKNOWN_${i}`
+    const decimals = decimalsResult.status === 'success' ? Number(decimalsResult.result)  : 18
+    const divisor  = BigInt(10 ** decimals)
+
+    const supplyRaw = supplyResult.status === 'success' ? supplyResult.result as bigint : BigInt(0)
+    const debtRaw   = debtResult.status   === 'success' ? debtResult.result   as bigint : BigInt(0)
+
+    const totalSupply = Number(supplyRaw / divisor) + Number(supplyRaw % divisor) / 10 ** decimals
+    const totalBorrow = Number(debtRaw   / divisor) + Number(debtRaw   % divisor) / 10 ** decimals
+
+    const configBig = BigInt(reserve.data.configuration)
+    const decoded   = decodeConfiguration(configBig)
 
     rates.push({
       protocol: 'neverland',
-      asset: symbol,
-      assetAddress: addr,
-      supplyAPY:       rayToAPY(BigInt(reserveData.currentLiquidityRate)),
-      borrowAPR:       rayToAPY(BigInt(reserveData.currentVariableBorrowRate)),
+      asset:    symbol,
+      assetAddress: reserve.addr,
+      supplyAPY:    rayToAPY(BigInt(reserve.data.currentLiquidityRate)),
+      borrowAPR:    rayToAPY(BigInt(reserve.data.currentVariableBorrowRate)),
       utilizationRate: totalSupply > 0 && totalBorrow > 0
         ? totalBorrow / totalSupply
         : 0,
       totalSupply,
       totalBorrow,
+      ltv:                  decoded.ltv,
+      liquidationThreshold: decoded.liquidationThreshold,
+      liquidationBonus:     decoded.liquidationBonus,
+      reserveFactor:        decoded.reserveFactor,
     })
   })
 
@@ -203,20 +263,11 @@ export async function getLendingRates(): Promise<LendingRate[]> {
 /**
  * Returns the Neverland reserve asset with the highest current supply APY.
  *
- * Calls {@link getLendingRates} and reduces to the top-yielding asset.
- * Useful for routing idle capital to the best passive yield available.
- *
- * @returns The {@link LendingRate} entry with the maximum `supplyAPY`
- *
- * @example
- * ```typescript
- * const best = await getBestSupplyAsset()
- * // → { asset: 'USDC', supplyAPY: 0.0387, protocol: 'neverland', ... }
- * ```
+ * @returns The {@link NeverlandLendingRate} entry with the maximum `supplyAPY`
  *
  * @category Lending
  */
-export async function getBestSupplyAsset(): Promise<LendingRate> {
+export async function getBestSupplyAsset(): Promise<NeverlandLendingRate> {
   const rates = await getLendingRates()
   return rates.reduce((best, r) => r.supplyAPY > best.supplyAPY ? r : best)
 }
@@ -224,63 +275,55 @@ export async function getBestSupplyAsset(): Promise<LendingRate> {
 /**
  * Returns the Neverland reserve asset with the lowest current borrow APR.
  *
- * Calls {@link getLendingRates} and reduces to the cheapest borrow.
- * Useful for strategies that need to source leverage at minimal cost.
- *
- * @returns The {@link LendingRate} entry with the minimum `borrowAPR`
- *
- * @example
- * ```typescript
- * const cheapest = await getBestBorrowAsset()
- * // → { asset: 'WMON', borrowAPR: 0.021, protocol: 'neverland', ... }
- * ```
+ * @returns The {@link NeverlandLendingRate} entry with the minimum `borrowAPR`
  *
  * @category Lending
  */
-export async function getBestBorrowAsset(): Promise<LendingRate> {
+export async function getBestBorrowAsset(): Promise<NeverlandLendingRate> {
   const rates = await getLendingRates()
   return rates.reduce((best, r) => r.borrowAPR < best.borrowAPR ? r : best)
 }
 
 /**
- * Returns the total value supplied across all Neverland reserves.
+ * Returns the total USD value supplied across all Neverland reserves.
  *
- * Sums `totalSupply` from all aToken contracts. Note: values are in asset units,
- * not USD-normalised (stable assets approximate face value; volatile assets
- * require an additional price oracle call for exact USD TVL).
+ * For stablecoin assets, counts totalSupply directly as USD.
+ * For non-stablecoin assets (WMON, WETH, WBTC, MON), uses oracle price from
+ * {@link getVerifiedPrice}. If price unavailable for a non-stable asset, that
+ * asset is skipped (not counted as 0).
  *
- * @returns Total supplied balance summed across all reserves (asset units)
- *
- * @example
- * ```typescript
- * const tvl = await getNeverlandTVL()
- * // → 7940000
- * ```
+ * @returns Total TVL in USD
  *
  * @category Lending
  */
 export async function getNeverlandTVL(): Promise<number> {
   const rates = await getLendingRates()
-  // TVL in "units" — not USD normalized (would need price oracle for full USD TVL)
-  return rates.reduce((sum, r) => sum + r.totalSupply, 0)
+
+  const pricePromises = rates.map(async (r) => {
+    if (!NON_STABLE_SYMBOLS.has(r.asset)) {
+      return { symbol: r.asset, supply: r.totalSupply, price: 1 }
+    }
+    try {
+      const vp = await getVerifiedPrice(r.asset)
+      return { symbol: r.asset, supply: r.totalSupply, price: vp.bestPrice }
+    } catch {
+      return null
+    }
+  })
+
+  const resolved = await Promise.all(pricePromises)
+
+  return resolved.reduce((sum, item) => {
+    if (item === null) return sum
+    return sum + item.supply * item.price
+  }, 0)
 }
 
 /**
  * Compares aPriori staking APR against the best Neverland supply APY.
  *
- * Fetches all lending rates, finds the highest-yielding asset, and builds a
- * human-readable recommendation explaining which strategy currently pays more
- * and by how many basis points.
- *
  * @param stakingAPR - Staking APR result from `getStakingAPR()` in `apriori.ts`
  * @returns A {@link YieldComparison} with `staking`, `bestLending`, `recommendation`, and `reason`
- *
- * @example
- * ```typescript
- * const apr = await getStakingAPR()
- * const cmp = await compareYields(apr)
- * // → { recommendation: 'staking', reason: 'aPriori staking (9.40%) beats USDC lending (3.87%) by 5.53%' }
- * ```
  *
  * @category Lending
  */

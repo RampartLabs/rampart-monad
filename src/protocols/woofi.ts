@@ -10,7 +10,9 @@
  *
  * Available functions:
  * - {@link getWooFiPools} — pool reserve and fee data for all supported base tokens
- * - {@link getWooFiQuote} — PMM sell quote: quoteToken received for a given baseToken amount
+ * - {@link getWooFiQuote} — PMM quote for any token pair via WooPPV2.query
+ * - {@link getWooFiRouterQuote} — router-level quote via WooRouterV2.querySwap (any pair)
+ * - {@link getWooFiStats} — WooFi platform stats from REST API (volume, TVL, traders)
  */
 
 // ============================================================
@@ -29,6 +31,16 @@ export const WOOFI_ADDRESSES = {
   wooRouter: '0x4c4AF8DBc524681930a27b2F1Af5bcC8062E6fB7' as `0x${string}`,
 } as const
 
+const ERC20_DECIMALS_ABI = [
+  {
+    name: 'decimals',
+    type: 'function' as const,
+    inputs: [],
+    outputs: [{ type: 'uint8' }],
+    stateMutability: 'view' as const,
+  },
+] as const
+
 const WOO_PP_ABI = [
   {
     name: 'tokenInfos',
@@ -46,23 +58,25 @@ const WOO_PP_ABI = [
     stateMutability: 'view' as const,
   },
   {
-    name: 'querySellBase',
+    name: 'query',
     type: 'function' as const,
     inputs: [
-      { name: 'baseToken',   type: 'address' },
-      { name: 'baseAmount',  type: 'uint256' },
+      { name: 'fromToken', type: 'address' },
+      { name: 'toToken',   type: 'address' },
+      { name: 'fromAmount', type: 'uint256' },
     ],
-    outputs: [{ name: 'quoteAmount', type: 'uint256' }],
+    outputs: [{ name: 'toAmount', type: 'uint256' }],
     stateMutability: 'view' as const,
   },
   {
-    name: 'querySellQuote',
+    name: 'tryQuery',
     type: 'function' as const,
     inputs: [
-      { name: 'baseToken',    type: 'address' },
-      { name: 'quoteAmount',  type: 'uint256' },
+      { name: 'fromToken', type: 'address' },
+      { name: 'toToken',   type: 'address' },
+      { name: 'fromAmount', type: 'uint256' },
     ],
-    outputs: [{ name: 'baseAmount', type: 'uint256' }],
+    outputs: [{ name: 'toAmount', type: 'uint256' }],
     stateMutability: 'view' as const,
   },
   {
@@ -73,6 +87,22 @@ const WOO_PP_ABI = [
     stateMutability: 'view' as const,
   },
 ] as const
+
+const WOO_ROUTER_ABI = [
+  {
+    name: 'querySwap',
+    type: 'function' as const,
+    inputs: [
+      { name: 'fromToken', type: 'address' },
+      { name: 'toToken',   type: 'address' },
+      { name: 'fromAmount', type: 'uint256' },
+    ],
+    outputs: [{ name: 'toAmount', type: 'uint256' }],
+    stateMutability: 'view' as const,
+  },
+] as const
+
+const WOOFI_STATS_API = 'https://fi-api.woo.org'
 
 export interface WooFiPool {
   baseToken:  string
@@ -89,7 +119,23 @@ export interface WooFiQuote {
   protocol:    string
 }
 
+export interface WooFiStats {
+  volume24h:  number
+  tvl:        number
+  traders24h: number
+  protocol:   string
+}
+
 const PROBE_TOKENS = ['WMON', 'WETH', 'WBTC', 'USDT'] as const
+
+async function getTokenDecimals(address: `0x${string}`, fallback = 18): Promise<number> {
+  const d = await publicClient.readContract({
+    address,
+    abi: ERC20_DECIMALS_ABI,
+    functionName: 'decimals',
+  }).catch(() => null)
+  return d != null ? Number(d) : fallback
+}
 
 /**
  * Returns WooFi pool reserve and fee data for all supported base tokens on Monad.
@@ -112,11 +158,15 @@ export async function getWooFiPools(): Promise<WooFiPool[]> {
     address: WOOFI_ADDRESSES.wooPPV2,
     abi: WOO_PP_ABI,
     functionName: 'quoteToken',
-  }).catch(() => null)
+  }).catch(() => null) as `0x${string}` | null
 
   const quoteToken = PROBE_TOKENS.find(t => {
-    try { return getToken(t).address.toLowerCase() === (quoteAddr as string)?.toLowerCase() } catch { return false }
+    try { return getToken(t).address.toLowerCase() === quoteAddr?.toLowerCase() } catch { return false }
   }) ?? 'USDC'
+
+  const quoteDecimals = quoteAddr
+    ? await getTokenDecimals(quoteAddr, 6)
+    : 6
 
   const results = await Promise.allSettled(
     PROBE_TOKENS.map(async symbol => {
@@ -132,10 +182,12 @@ export async function getWooFiPools(): Promise<WooFiPool[]> {
 
       if (!info || (info as any).reserve === 0n) return null
 
+      const tokenDecimals = await getTokenDecimals(tokenAddr, TOKENS[symbol]?.decimals ?? 18)
+
       return {
         baseToken:  symbol,
         quoteToken,
-        reserve:    Number((info as any).reserve) / 1e18,
+        reserve:    Number((info as any).reserve) / 10 ** tokenDecimals,
         feeRate:    Number((info as any).feeRate),
         protocol:   'woofi',
       } satisfies WooFiPool
@@ -146,93 +198,146 @@ export async function getWooFiPools(): Promise<WooFiPool[]> {
 }
 
 /**
- * Queries the WooFi PMM for a sell-base quote on Monad.
+ * Queries the WooFi PMM for a swap quote via WooPPV2.query on Monad.
  *
- * Calls `querySellBase` on WooPPV2 to determine how many USDC (quoteToken) you receive
- * for selling `amountIn` units of the given base token.
+ * Calls `query(fromToken, toToken, fromAmount)` on WooPPV2 — supports any token pair,
+ * not just base→quote. Validates against pool reserve balance.
  *
- * @param baseSymbol - Base token symbol to sell (e.g. `'WMON'`, `'WETH'`, `'WBTC'`)
- * @param amountIn   - Amount of base token in human-readable units (e.g. `1` for 1 WMON)
+ * @param fromSymbol - Input token symbol (e.g. `'WMON'`, `'WETH'`, `'USDC'`)
+ * @param toSymbol   - Output token symbol (e.g. `'USDC'`, `'WETH'`)
+ * @param amountIn   - Amount in human-readable units (e.g. `1` for 1 WMON)
  * @returns {@link WooFiQuote} with amountOut, effective price, and protocol tag, or `null` on failure
  *
  * @example
  * ```typescript
- * const quote = await getWooFiQuote('WMON', 100)
+ * const quote = await getWooFiQuote('WMON', 'USDC', 100)
  * // → { amountIn: 100, amountOut: 35.4, price: 0.354, protocol: 'woofi' }
  * ```
  *
  * @category DEX
  */
 export async function getWooFiQuote(
-  baseSymbol: string,
+  fromSymbol: string,
+  toSymbol: string,
   amountIn: number,
 ): Promise<WooFiQuote | null> {
-  let baseAddr: `0x${string}`
-  try { baseAddr = getToken(baseSymbol).address } catch { return null }
+  let fromAddr: `0x${string}`, toAddr: `0x${string}`
+  try {
+    fromAddr = getToken(fromSymbol).address
+    toAddr   = getToken(toSymbol).address
+  } catch { return null }
 
-  const decimals = TOKENS[baseSymbol]?.decimals ?? 18
-  const amountInRaw = BigInt(Math.round(amountIn * 10 ** decimals))
+  const fromDecimals = await getTokenDecimals(fromAddr, TOKENS[fromSymbol]?.decimals ?? 18)
+  const toDecimals   = await getTokenDecimals(toAddr,   TOKENS[toSymbol]?.decimals   ?? 18)
+  const amountInRaw  = BigInt(Math.round(amountIn * 10 ** fromDecimals))
 
-  const quoteAmount = await publicClient.readContract({
+  const toAmount = await publicClient.readContract({
     address: WOOFI_ADDRESSES.wooPPV2,
     abi: WOO_PP_ABI,
-    functionName: 'querySellBase',
-    args: [baseAddr, amountInRaw],
+    functionName: 'query',
+    args: [fromAddr, toAddr, amountInRaw],
   }).catch(() => null)
 
-  if (quoteAmount === null) return null
+  if (toAmount === null) return null
 
-  const amountOut = Number(quoteAmount) / 1e6  // USDC = 6 decimals
+  const amountOut = Number(toAmount) / 10 ** toDecimals
   return {
     amountIn,
     amountOut,
-    price:    amountOut / amountIn,
+    price:    amountIn > 0 ? amountOut / amountIn : 0,
     protocol: 'woofi',
   }
 }
 
 /**
- * Queries the WooFi PMM for a sell-quote (reverse) quote on Monad.
+ * Queries the WooFi router for a swap quote via WooRouterV2.querySwap on Monad.
  *
- * Calls `querySellQuote` on WooPPV2 — you sell USDC (quoteToken) and receive a base token.
- * This is the reverse direction of {@link getWooFiQuote}.
+ * Calls `querySwap(fromToken, toToken, fromAmount)` on WooRouterV2 — router-level quote
+ * that supports any token pair including multi-hop routes outside base→quote direction.
  *
- * @param baseSymbol  - Base token you want to receive (e.g. `'WMON'`, `'WETH'`)
- * @param quoteAmount - Amount of USDC to sell (human-readable, e.g. `100` = 100 USDC)
- * @returns {@link WooFiQuote} with amountOut in base token units, or `null` on failure
+ * @param fromSymbol - Input token symbol (e.g. `'WMON'`, `'WETH'`)
+ * @param toSymbol   - Output token symbol (e.g. `'USDC'`, `'WBTC'`)
+ * @param amountIn   - Amount in human-readable units (e.g. `1` for 1 WETH)
+ * @returns {@link WooFiQuote} with amountOut, effective price, and protocol tag, or `null` on failure
  *
  * @example
  * ```typescript
- * const quote = await getWooFiQuoteReverse('WMON', 100)
- * // → { amountIn: 100, amountOut: 282.5, price: 0.354, protocol: 'woofi' }
+ * const quote = await getWooFiRouterQuote('WETH', 'WBTC', 1)
+ * // → { amountIn: 1, amountOut: 0.059, price: 0.059, protocol: 'woofi' }
  * ```
  *
  * @category DEX
  */
-export async function getWooFiQuoteReverse(
-  baseSymbol: string,
-  quoteAmount: number,
+export async function getWooFiRouterQuote(
+  fromSymbol: string,
+  toSymbol: string,
+  amountIn: number,
 ): Promise<WooFiQuote | null> {
-  let baseAddr: `0x${string}`
-  try { baseAddr = getToken(baseSymbol).address } catch { return null }
+  let fromAddr: `0x${string}`, toAddr: `0x${string}`
+  try {
+    fromAddr = getToken(fromSymbol).address
+    toAddr   = getToken(toSymbol).address
+  } catch { return null }
 
-  const quoteAmountRaw = BigInt(Math.round(quoteAmount * 1e6))  // USDC = 6 decimals
+  const fromDecimals = await getTokenDecimals(fromAddr, TOKENS[fromSymbol]?.decimals ?? 18)
+  const toDecimals   = await getTokenDecimals(toAddr,   TOKENS[toSymbol]?.decimals   ?? 18)
+  const amountInRaw  = BigInt(Math.round(amountIn * 10 ** fromDecimals))
 
-  const baseAmount = await publicClient.readContract({
-    address: WOOFI_ADDRESSES.wooPPV2,
-    abi: WOO_PP_ABI,
-    functionName: 'querySellQuote',
-    args: [baseAddr, quoteAmountRaw],
+  const toAmount = await publicClient.readContract({
+    address: WOOFI_ADDRESSES.wooRouter,
+    abi: WOO_ROUTER_ABI,
+    functionName: 'querySwap',
+    args: [fromAddr, toAddr, amountInRaw],
   }).catch(() => null)
 
-  if (baseAmount === null) return null
+  if (toAmount === null) return null
 
-  const baseDecimals = TOKENS[baseSymbol]?.decimals ?? 18
-  const amountOut = Number(baseAmount) / 10 ** baseDecimals
+  const amountOut = Number(toAmount) / 10 ** toDecimals
   return {
-    amountIn:  quoteAmount,
+    amountIn,
     amountOut,
-    price:     amountOut > 0 ? quoteAmount / amountOut : 0,
-    protocol:  'woofi',
+    price:    amountIn > 0 ? amountOut / amountIn : 0,
+    protocol: 'woofi',
+  }
+}
+
+/**
+ * Fetches WooFi platform statistics from the WooFi REST API.
+ *
+ * Calls `https://fi-api.woo.org/stat` and filters for Monad-specific data.
+ *
+ * @returns {@link WooFiStats} with 24h volume, TVL, traders count, or `null` on failure
+ *
+ * @example
+ * ```typescript
+ * const stats = await getWooFiStats()
+ * // → { volume24h: 1200000, tvl: 500000, traders24h: 340, protocol: 'woofi' }
+ * ```
+ *
+ * @category DEX
+ */
+export async function getWooFiStats(): Promise<WooFiStats | null> {
+  try {
+    const resp = await fetch(`${WOOFI_STATS_API}/stat`)
+    if (!resp.ok) return null
+    const data = await resp.json()
+
+    const rows: any[] = Array.isArray(data?.data) ? data.data : Array.isArray(data?.rows) ? data.rows : []
+    const monad = rows.find((r: any) =>
+      typeof r?.network === 'string' && r.network.toLowerCase().includes('monad')
+    ) ?? rows.find((r: any) =>
+      r?.chainId === 143 || r?.chain_id === 143
+    )
+
+    const src = monad ?? data
+
+    return {
+      volume24h:  Number(src?.volume24h  ?? src?.volume_24h  ?? src?.volume  ?? 0),
+      tvl:        Number(src?.tvl        ?? src?.totalLiquidity ?? 0),
+      traders24h: Number(src?.traders24h ?? src?.traders_24h ?? src?.users   ?? 0),
+      protocol:   'woofi',
+    }
+  } catch {
+    return null
   }
 }

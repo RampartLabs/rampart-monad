@@ -8,7 +8,7 @@
  * **Docs:** https://app.leverup.xyz
  *
  * Available functions:
- * - {@link getLeverUpStats} — LVUSD supply, LVMON supply, collateral ratio
+ * - {@link getLeverUpStats} — LVUSD supply, LVMON supply, collateral ratio, issuer collateral ratios
  * - {@link getLeverUpMarkets} — LeverUp leveraged markets as PerpMarket structs
  */
 
@@ -43,24 +43,31 @@ const LEVERUP_MAIN_ABI = [
   { name: 'collateralBalance',  type: 'function' as const, inputs: [], outputs: [{ type: 'uint256' }], stateMutability: 'view' as const },
   { name: 'totalCollateral',    type: 'function' as const, inputs: [], outputs: [{ type: 'uint256' }], stateMutability: 'view' as const },
   { name: 'maxLeverage',        type: 'function' as const, inputs: [], outputs: [{ type: 'uint256' }], stateMutability: 'view' as const },
+  { name: 'fundingRate',        type: 'function' as const, inputs: [], outputs: [{ type: 'int256' }],  stateMutability: 'view' as const },
+] as const
+
+const ISSUER_ABI = [
+  { name: 'collateralRatio', type: 'function' as const, inputs: [], outputs: [{ type: 'uint256' }], stateMutability: 'view' as const },
 ] as const
 
 export interface LeverUpStats {
-  tvlUSD:                 number    // collateral locked
-  longOI:                 number    // long open interest (USD)
-  shortOI:                number    // short open interest (USD)
+  tvlUSD:                 number
+  longOI:                 number
+  shortOI:                number
   totalOI:                number
-  lvusdSupply:            number    // LVUSD tokens in circulation
-  lvmonSupply:            number    // LVMON tokens in circulation
-  collateralizationRatio: number    // tvlUSD / lvusdSupply — collateral coverage of LVUSD
-  lvusdBacking:           number    // MON-denominated collateral backing LVUSD
+  lvusdSupply:            number
+  lvmonSupply:            number
+  collateralizationRatio: number
+  lvusdBacking:           number
+  lvusdIssuerCollateralRatio: number | null
+  lvmonIssuerCollateralRatio: number | null
   protocol:               'leverup'
 }
 
 /**
- * Returns LeverUp protocol stats: collateral TVL, open interest, and LVUSD/LVMON token supplies.
+ * Returns LeverUp protocol stats: collateral TVL, open interest, LVUSD/LVMON supplies, and issuer collateral ratios.
  *
- * @returns {@link LeverUpStats} — TVL in USD, long/short OI in USD, LVUSD and LVMON circulating supply
+ * @returns {@link LeverUpStats}
  *
  * @example
  * ```typescript
@@ -71,7 +78,11 @@ export interface LeverUpStats {
  * @category Perps
  */
 export async function getLeverUpStats(): Promise<LeverUpStats> {
-  const [collateralRaw, longOIRaw, shortOIRaw, lvusdSupplyRaw, lvmonSupplyRaw] = await Promise.allSettled([
+  const [
+    collateralRaw, longOIRaw, shortOIRaw,
+    lvusdSupplyRaw, lvmonSupplyRaw,
+    lvusdIssuerCRRaw, lvmonIssuerCRRaw,
+  ] = await Promise.allSettled([
     publicClient.readContract({ address: LEVERUP_ADDRESSES.LeverUp, abi: LEVERUP_MAIN_ABI, functionName: 'totalCollateral' }).catch(() =>
       publicClient.readContract({ address: LEVERUP_ADDRESSES.LeverUp, abi: LEVERUP_MAIN_ABI, functionName: 'collateralBalance' })
     ),
@@ -79,25 +90,31 @@ export async function getLeverUpStats(): Promise<LeverUpStats> {
     publicClient.readContract({ address: LEVERUP_ADDRESSES.LeverUp, abi: LEVERUP_MAIN_ABI, functionName: 'totalShortPositions' }),
     publicClient.readContract({ address: LEVERUP_ADDRESSES.LVUSD, abi: ERC20_ABI, functionName: 'totalSupply' }),
     publicClient.readContract({ address: LEVERUP_ADDRESSES.LVMON, abi: ERC20_ABI, functionName: 'totalSupply' }),
+    publicClient.readContract({ address: LEVERUP_ADDRESSES.LVUSD_Issuer, abi: ISSUER_ABI, functionName: 'collateralRatio' }),
+    publicClient.readContract({ address: LEVERUP_ADDRESSES.LVMON_Issuer, abi: ISSUER_ABI, functionName: 'collateralRatio' }),
   ])
 
   const monPrice = await getVerifiedPrice('MON').then(r => r.bestPrice)
 
-  // Collateral is likely in MON or LVUSD — convert to USD
-  const collateral = collateralRaw.status  === 'fulfilled' ? Number(collateralRaw.value  as bigint) / 1e18 : 0
-  const longOI     = longOIRaw.status     === 'fulfilled' ? Number(longOIRaw.value     as bigint) / 1e18 : 0
-  const shortOI    = shortOIRaw.status    === 'fulfilled' ? Number(shortOIRaw.value    as bigint) / 1e18 : 0
+  const collateral  = collateralRaw.status  === 'fulfilled' ? Number(collateralRaw.value  as bigint) / 1e18 : 0
+  const longOI      = longOIRaw.status      === 'fulfilled' ? Number(longOIRaw.value      as bigint) / 1e18 : 0
+  const shortOI     = shortOIRaw.status     === 'fulfilled' ? Number(shortOIRaw.value     as bigint) / 1e18 : 0
   const lvusdSupply = lvusdSupplyRaw.status === 'fulfilled' ? Number(lvusdSupplyRaw.value as bigint) / 1e18 : 0
   const lvmonSupply = lvmonSupplyRaw.status === 'fulfilled' ? Number(lvmonSupplyRaw.value as bigint) / 1e18 : 0
 
-  // TVL = LVUSD supply (1:1 USD) + LVMON supply * MON price
-  const tvlUSD = lvusdSupply + lvmonSupply * monPrice + collateral
+  const lvusdIssuerCollateralRatio = lvusdIssuerCRRaw.status === 'fulfilled'
+    ? Number(lvusdIssuerCRRaw.value as bigint) / 1e18
+    : null
+  const lvmonIssuerCollateralRatio = lvmonIssuerCRRaw.status === 'fulfilled'
+    ? Number(lvmonIssuerCRRaw.value as bigint) / 1e18
+    : null
 
+  const tvlUSD = lvusdSupply + lvmonSupply * monPrice + collateral
   const collateralizationRatio = lvusdSupply > 0 ? tvlUSD / lvusdSupply : 0
   const lvusdBacking = lvmonSupply * monPrice + collateral
 
   return {
-    tvlUSD:                 Math.max(tvlUSD, lvusdSupply),   // LVUSD supply is min TVL
+    tvlUSD:                 Math.max(tvlUSD, lvusdSupply),
     longOI:                 longOI * monPrice,
     shortOI:                shortOI * monPrice,
     totalOI:                (longOI + shortOI) * monPrice,
@@ -105,38 +122,90 @@ export async function getLeverUpStats(): Promise<LeverUpStats> {
     lvmonSupply,
     collateralizationRatio,
     lvusdBacking,
+    lvusdIssuerCollateralRatio,
+    lvmonIssuerCollateralRatio,
     protocol:               'leverup',
   }
 }
 
 /**
- * Returns LeverUp leveraged markets as PerpMarket-compatible structs for cross-protocol aggregation.
+ * Returns LeverUp leveraged markets as PerpMarket-compatible structs.
  *
- * @returns Array with a single MON-denominated market entry shaped as a {@link PerpMarket}
+ * Exposes three market entries: MON (main market), LVUSD and LVMON as synthetic assets.
+ * `fundingRate` is read from the contract's `fundingRate()` view (int256, 18 decimals, per-second).
+ * `maxLeverage` is read from `maxLeverage()` view (uint256, likely basis points or integer).
+ *
+ * @returns Array of market entries shaped as PerpMarket structs
  *
  * @example
  * ```typescript
  * const markets = await getLeverUpMarkets()
- * // → [{ protocol: 'leverup', asset: 'MON', longOI: 600000, maxLeverage: 10, sentiment: 'neutral' }]
+ * // → [{ protocol: 'leverup', asset: 'MON', longOI: 600000, maxLeverage: 20, fundingRate: -0.0001, ... }]
  * ```
  *
  * @category Perps
  */
 export async function getLeverUpMarkets() {
-  const stats = await getLeverUpStats()
-  return [{
-    protocol:      'leverup' as const,
-    asset:         'MON',
-    longOI:        stats.longOI,
-    shortOI:       stats.shortOI,
-    totalOI:       stats.totalOI,
-    fundingRate:   0,
-    longFundingAPR: 0,
-    maxLeverage:   10,
-    sentiment:     stats.longOI > stats.shortOI * 1.1
-      ? 'bullish' as const
-      : stats.shortOI > stats.longOI * 1.1
-        ? 'bearish' as const
-        : 'neutral' as const,
-  }]
+  const [stats, fundingRateRaw, maxLeverageRaw] = await Promise.all([
+    getLeverUpStats(),
+    publicClient.readContract({ address: LEVERUP_ADDRESSES.LeverUp, abi: LEVERUP_MAIN_ABI, functionName: 'fundingRate' }).catch(() => null),
+    publicClient.readContract({ address: LEVERUP_ADDRESSES.LeverUp, abi: LEVERUP_MAIN_ABI, functionName: 'maxLeverage' }).catch(() => null),
+  ])
+
+  const fundingRate = fundingRateRaw !== null
+    ? Number(fundingRateRaw as bigint) / 1e18
+    : 0
+
+  const maxLeverage = maxLeverageRaw !== null
+    ? (() => {
+        const raw = Number(maxLeverageRaw as bigint)
+        if (raw > 1000) return raw / 100
+        if (raw === 0) return 1
+        return raw
+      })()
+    : 0
+
+  const longFundingAPR = fundingRate * 365 * 24 * 3600
+
+  const sentiment = stats.longOI > stats.shortOI * 1.1
+    ? 'bullish' as const
+    : stats.shortOI > stats.longOI * 1.1
+      ? 'bearish' as const
+      : 'neutral' as const
+
+  return [
+    {
+      protocol:       'leverup' as const,
+      asset:          'MON',
+      longOI:         stats.longOI,
+      shortOI:        stats.shortOI,
+      totalOI:        stats.totalOI,
+      fundingRate,
+      longFundingAPR,
+      maxLeverage,
+      sentiment,
+    },
+    {
+      protocol:       'leverup' as const,
+      asset:          'LVUSD',
+      longOI:         stats.lvusdSupply,
+      shortOI:        0,
+      totalOI:        stats.lvusdSupply,
+      fundingRate:    0,
+      longFundingAPR: 0,
+      maxLeverage,
+      sentiment:      'neutral' as const,
+    },
+    {
+      protocol:       'leverup' as const,
+      asset:          'LVMON',
+      longOI:         stats.lvmonSupply,
+      shortOI:        0,
+      totalOI:        stats.lvmonSupply,
+      fundingRate:    0,
+      longFundingAPR: 0,
+      maxLeverage,
+      sentiment:      'neutral' as const,
+    },
+  ]
 }
