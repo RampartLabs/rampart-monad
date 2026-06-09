@@ -41,7 +41,7 @@ interface SymbolInfo {
   baseDecimals: number
   quoteDecimals: number
   sizePrecision: bigint
-  pricePrecision: number
+  pricePrecision: bigint
   takerFeeBps: number
 }
 
@@ -67,7 +67,7 @@ async function getSymbols(): Promise<SymbolInfo[]> {
           baseDecimals:    s.baseAssetPrecision,
           quoteDecimals:   s.quoteAssetPrecision,
           sizePrecision:   BigInt(s.sizePrecision),
-          pricePrecision:  s.pricePrecision,
+          pricePrecision:  BigInt(s.pricePrecision),
           takerFeeBps:     s.takerFeeBps ?? 0,
         }))
     })
@@ -82,20 +82,24 @@ async function getSymbols(): Promise<SymbolInfo[]> {
 
 /**
  * Converts Kuru raw price to human-readable quote amount.
- * Formula: raw / sizePrecision  (fixed 2026-04-20 — removed erroneous *10)
- *   MON_USDC: 30845e12 / 1e18 = 0.030845 USDC ✓
+ * Formula: raw / 1e18  (verified empirically 2026-06-09 across MON_USDC,
+ *   MON_AUSD, WETH_USDC, AUSD_USDC, WBTC_AUSD — Kuru normalizes to 18 decimals
+ *   regardless of base/quote token decimals)
+ *   MON_USDC: 21302000000000000 / 1e18 = 0.021302 USDC ✓
+ *   WETH_USDC: 1648500000000000000000 / 1e18 = 1648.5 USDC ✓
+ *   WBTC_AUSD: 67386000000000000000000 / 1e18 = 67386 AUSD ✓
  */
-function decodePrice(raw: string, sizePrecision: bigint): number {
-  return Number(BigInt(raw)) / Number(sizePrecision)
+const KURU_PRICE_SCALE = 10n ** 18n
+function decodePrice(raw: string): number {
+  return Number(BigInt(raw)) / Number(KURU_PRICE_SCALE)
 }
 
 /**
  * Converts Kuru raw size to human-readable base token amount.
- * Formula: raw * 10^quoteDecimals / sizePrecision  (verified empirically 2026-04-17)
- *   MON_USDC: raw * 1e6 / 1e18 = raw / 1e12 → 516389184750568 → 516.39 MON ✓
+ * Formula: raw / sizePrecision (from exchangeInfo per market)
  */
-function decodeSize(raw: string, sizePrecision: bigint, quoteDecimals: number): number {
-  return Number(BigInt(raw)) * Math.pow(10, quoteDecimals) / Number(sizePrecision)
+function decodeSize(raw: string, sizePrecision: bigint): number {
+  return Number(BigInt(raw)) / Number(sizePrecision)
 }
 
 /**
@@ -124,7 +128,7 @@ export async function getTokenPrice(token: string, quoteAsset = 'USDC'): Promise
 
   return {
     token,
-    price: decodePrice(ticker.lastPrice, sym.sizePrecision),
+    price: decodePrice(ticker.lastPrice),
     source: 'kuru',
     timestamp: Date.now(),
   }
@@ -159,8 +163,8 @@ export async function getKuruPools(): Promise<Pool[]> {
 
   return symbols.map(s => {
     const t = tickerMap.get(s.symbol)
-    const priceDecoded = t ? decodePrice(t.lastPrice, s.sizePrecision) : undefined
-    const volumeRaw = t ? decodeSize(t.volume, s.sizePrecision, s.quoteDecimals) : undefined
+    const priceDecoded = t ? decodePrice(t.lastPrice) : undefined
+    const volumeRaw = t ? decodeSize(t.volume, s.sizePrecision) : undefined
 
     return {
       protocol: 'kuru' as const,
@@ -199,12 +203,12 @@ export async function getOrderbook(symbol: string, depth = 10): Promise<Orderboo
   const data = await fetch(`${KURU_BASE}/depth?symbol=${symbol}&limit=${depth}`).then(r => r.json())
 
   const bids: [number, number][] = (data.bids as string[][]).map(([p, s]) => [
-    decodePrice(p, sym.sizePrecision),
-    decodeSize(s, sym.sizePrecision, sym.quoteDecimals),
+    decodePrice(p),
+    decodeSize(s, sym.sizePrecision),
   ])
   const asks: [number, number][] = (data.asks as string[][]).map(([p, s]) => [
-    decodePrice(p, sym.sizePrecision),
-    decodeSize(s, sym.sizePrecision, sym.quoteDecimals),
+    decodePrice(p),
+    decodeSize(s, sym.sizePrecision),
   ])
 
   const bestBid = bids[0]?.[0] ?? 0
@@ -257,16 +261,16 @@ export async function simulateKuruSwap(
   const depth    = await fetch(`${KURU_BASE}/depth?symbol=${symbol}&limit=50`).then(r => r.json())
 
   const levels: [number, number][] = isBuying
-    ? (depth.asks as string[][]).map(([p, s]) => [decodePrice(p, sym.sizePrecision), decodeSize(s, sym.sizePrecision, sym.quoteDecimals)])
-    : (depth.bids as string[][]).map(([p, s]) => [decodePrice(p, sym.sizePrecision), decodeSize(s, sym.sizePrecision, sym.quoteDecimals)])
+    ? (depth.asks as string[][]).map(([p, s]) => [decodePrice(p), decodeSize(s, sym.sizePrecision)])
+    : (depth.bids as string[][]).map(([p, s]) => [decodePrice(p), decodeSize(s, sym.sizePrecision)])
 
   if (!depth.bids?.length || !depth.asks?.length) {
     throw new Error(`simulateKuruSwap: empty orderbook for ${symbol}`)
   }
 
   const midPrice = (() => {
-    const bid = decodePrice(depth.bids[0][0], sym.sizePrecision)
-    const ask = decodePrice(depth.asks[0][0], sym.sizePrecision)
+    const bid = decodePrice(depth.bids[0][0])
+    const ask = decodePrice(depth.asks[0][0])
     return (bid + ask) / 2
   })()
 
